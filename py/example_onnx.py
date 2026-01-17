@@ -52,7 +52,7 @@ def parse_args():
         type=str,
         nargs="+",
         default=[
-            "This morning, I took a walk in the park, and the sound of the birds and the breeze was so pleasant that I stopped for a long time just to listen."
+            "안녕하세요? 나는 한득수입니다"
         ],
         help="Text(s) to synthesize. Can specify multiple texts for batch processing",
     )
