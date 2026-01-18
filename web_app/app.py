@@ -692,6 +692,54 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
             print("모든 폰트 로드 실패, 기본 폰트 사용")
             pil_font = ImageFont.load_default()
 
+        # 자막 이미지 캐시 (동일 텍스트 재사용)
+        subtitle_image_cache = {}
+        outline_width = 3
+
+        # 자막 이미지 생성 함수 (캐싱 적용)
+        def create_subtitle_image(line):
+            if line in subtitle_image_cache:
+                return subtitle_image_cache[line]
+
+            # 텍스트 크기 측정
+            bbox = pil_font.getbbox(line)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            bbox_offset_x = bbox[0]
+            bbox_offset_y = bbox[1]
+
+            # 이미지 크기 (자막 텍스트 + 여백)
+            img_width = text_width + outline_width * 2 + 20
+            img_height = text_height + outline_width * 2 + 20
+
+            # RGBA 이미지 생성 (투명 배경)
+            subtitle_img = PILImage.new('RGBA', (img_width, img_height), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(subtitle_img)
+
+            # 텍스트 위치 계산 (이미지 내 중앙)
+            text_x = (img_width - text_width) // 2 - bbox_offset_x
+            text_y = (img_height - text_height) // 2 - bbox_offset_y
+
+            # PIL stroke 기능 사용 (외곽선 + 본문 한번에) - 훨씬 빠름
+            try:
+                draw.text((text_x, text_y), line, font=pil_font,
+                         fill=(255, 255, 255, 255),
+                         stroke_width=outline_width,
+                         stroke_fill=(0, 0, 0, 255))
+            except TypeError:
+                # stroke 미지원 버전 폴백 (8방향만 - 49번->8번으로 최적화)
+                for dx, dy in [(-outline_width, 0), (outline_width, 0),
+                               (0, -outline_width), (0, outline_width),
+                               (-outline_width, -outline_width), (outline_width, -outline_width),
+                               (-outline_width, outline_width), (outline_width, outline_width)]:
+                    draw.text((text_x + dx, text_y + dy), line, font=pil_font, fill=(0, 0, 0, 255))
+                draw.text((text_x, text_y), line, font=pil_font, fill=(255, 255, 255, 255))
+
+            # numpy 배열로 변환하여 캐시
+            img_array = np.array(subtitle_img)
+            subtitle_image_cache[line] = (img_array, img_width, img_height)
+            return (img_array, img_width, img_height)
+
         for i, timing in enumerate(subtitle_timings):
             line = timing['text']
             start_time = timing['start']
@@ -700,49 +748,13 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
             if not line:
                 continue
 
-            if i % 5 == 0:
+            if i % 50 == 0:  # 50개마다 진행률 업데이트 (더 빠르게)
                 prog = 0.60 + (i / len(subtitle_timings)) * 0.15
                 progress(prog, desc=f'자막 클립 [{i + 1}/{len(subtitle_timings)}]')
 
             try:
-                # PIL로 자막 이미지 생성
-                # 텍스트 크기 측정
-                dummy_img = PILImage.new('RGBA', (1, 1))
-                dummy_draw = ImageDraw.Draw(dummy_img)
-                bbox = dummy_draw.textbbox((0, 0), line, font=pil_font)
-                # bbox는 (x0, y0, x1, y1) - y0가 음수일 수 있음 (baseline 위로 올라가는 부분)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1]
-                # bbox 오프셋 저장 (텍스트 그릴 때 보정 필요)
-                bbox_offset_x = bbox[0]
-                bbox_offset_y = bbox[1]
-
-                # 외곽선 두께
-                outline_width = 3
-
-                # 이미지 크기 (자막 텍스트 + 여백) - 더 넉넉하게 설정
-                img_width = text_width + outline_width * 2 + 20
-                img_height = text_height + outline_width * 2 + 20  # 하단 여백 증가
-
-                # RGBA 이미지 생성 (투명 배경)
-                subtitle_img = PILImage.new('RGBA', (img_width, img_height), (0, 0, 0, 0))
-                draw = ImageDraw.Draw(subtitle_img)
-
-                # 텍스트 위치 계산 (이미지 내 중앙, bbox 오프셋 보정)
-                text_x = (img_width - text_width) // 2 - bbox_offset_x
-                text_y = (img_height - text_height) // 2 - bbox_offset_y
-
-                # 외곽선 (검정)
-                for dx in range(-outline_width, outline_width + 1):
-                    for dy in range(-outline_width, outline_width + 1):
-                        if dx != 0 or dy != 0:
-                            draw.text((text_x + dx, text_y + dy), line, font=pil_font, fill=(0, 0, 0, 255))
-
-                # 본문 (흰색)
-                draw.text((text_x, text_y), line, font=pil_font, fill=(255, 255, 255, 255))
-
-                # PIL 이미지를 numpy 배열로 변환
-                img_array = np.array(subtitle_img)
+                # 캐시된 자막 이미지 사용 (이미 numpy 배열로 변환됨)
+                img_array, img_width, img_height = create_subtitle_image(line)
 
                 # ImageClip 생성
                 txt_clip = ImageClip(img_array, ismask=False, transparent=True)
