@@ -322,7 +322,14 @@ def load_text_processor(onnx_dir: str) -> UnicodeProcessor:
 def load_text_to_speech(onnx_dir: str, use_gpu: bool = False) -> TextToSpeech:
     opts = ort.SessionOptions()
     if use_gpu:
-        raise NotImplementedError("GPU mode is not fully tested")
+        # GPU 모드: CUDAExecutionProvider 사용 (없으면 CPU 폴백)
+        available_providers = ort.get_available_providers()
+        if "CUDAExecutionProvider" in available_providers:
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            print("Using GPU (CUDA) for inference")
+        else:
+            providers = ["CPUExecutionProvider"]
+            print("CUDA not available, falling back to CPU for inference")
     else:
         providers = ["CPUExecutionProvider"]
         print("Using CPU for inference")
