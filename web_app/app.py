@@ -24,6 +24,14 @@ else:
     # Linux/Mac
     os.environ['IMAGEMAGICK_BINARY'] = '/usr/bin/convert'
 
+    # MoviePy가 시스템 ffmpeg 사용하도록 설정 (NVENC 지원)
+    # imageio-ffmpeg 대신 시스템 ffmpeg 사용
+    import shutil
+    system_ffmpeg = shutil.which('ffmpeg')
+    if system_ffmpeg:
+        os.environ['IMAGEIO_FFMPEG_EXE'] = system_ffmpeg
+        print(f"시스템 ffmpeg 사용: {system_ffmpeg}")
+
 import gradio as gr
 import sys
 import datetime
