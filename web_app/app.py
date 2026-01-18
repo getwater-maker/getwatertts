@@ -384,9 +384,15 @@ def synthesize_speech(text, voice_label, language, speed, total_step, progress=g
 
 def create_video(tts_text, subtitle_text, voice_label, language, speed, total_step,
                  background_file, resolution, font_size, subtitle_position,
+                 subtitle_offset_x, subtitle_offset_y,
                  use_subtitle_bg, subtitle_bg_opacity, subtitle_bg_padding,
                  progress=gr.Progress(), output_name=None):
     """영상 생성"""
+    print(f"=== create_video 호출 ===")
+    print(f"use_subtitle_bg={use_subtitle_bg} (type={type(use_subtitle_bg)})")
+    print(f"subtitle_position={subtitle_position}, offset_x={subtitle_offset_x}%, offset_y={subtitle_offset_y}%")
+    print(f"font_size={font_size}, opacity={subtitle_bg_opacity}, padding={subtitle_bg_padding}")
+
     if not tts_text or not tts_text.strip():
         return None, "TTS 텍스트를 입력해주세요."
 
@@ -414,6 +420,21 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
             subtitle_bg_padding = 20
     except (ValueError, TypeError):
         subtitle_bg_padding = 20
+
+    # X/Y 오프셋 처리 (% 단위, -50 ~ 50 범위)
+    try:
+        subtitle_offset_x = float(subtitle_offset_x) if subtitle_offset_x is not None else 0
+        if subtitle_offset_x < -50 or subtitle_offset_x > 50:
+            subtitle_offset_x = 0
+    except (ValueError, TypeError):
+        subtitle_offset_x = 0
+
+    try:
+        subtitle_offset_y = float(subtitle_offset_y) if subtitle_offset_y is not None else 0
+        if subtitle_offset_y < -50 or subtitle_offset_y > 50:
+            subtitle_offset_y = 0
+    except (ValueError, TypeError):
+        subtitle_offset_y = 0
 
     resolution = resolution if resolution else "1920x1080"
 
@@ -521,8 +542,13 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
             bg_clip = ColorClip(size=(video_width, video_height), color=(26, 26, 46)).set_duration(audio_duration)
 
         # 자막 위치 계산
-        def get_subtitle_pos(pos, width, height, fsize):
+        def get_subtitle_pos(pos, width, height, fsize, offset_x_pct, offset_y_pct):
+            """자막 위치 계산 (오프셋은 해상도의 % 단위)"""
             margin = 50
+            # 오프셋 픽셀 계산 (해상도의 %)
+            offset_x_px = int(width * offset_x_pct / 100)
+            offset_y_px = int(height * offset_y_pct / 100)
+
             positions = {
                 '상단-왼쪽': (margin, margin),
                 '상단-중앙': ('center', margin),
@@ -534,9 +560,25 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
                 '하단-중앙': ('center', height - margin - fsize),
                 '하단-오른쪽': (width - margin, height - margin - fsize),
             }
-            return positions.get(pos, ('center', height - margin - fsize))
+            base_pos = positions.get(pos, ('center', height - margin - fsize))
 
-        txt_position = get_subtitle_pos(subtitle_position, video_width, video_height, font_size)
+            # 오프셋 적용 (center인 경우 픽셀로 변환 후 오프셋 적용)
+            final_x = base_pos[0]
+            final_y = base_pos[1]
+
+            if final_x == 'center':
+                final_x = width // 2 + offset_x_px
+            else:
+                final_x = final_x + offset_x_px
+
+            if final_y == 'center':
+                final_y = height // 2 + offset_y_px
+            else:
+                final_y = final_y + offset_y_px
+
+            return (final_x, final_y)
+
+        txt_position = get_subtitle_pos(subtitle_position, video_width, video_height, font_size, subtitle_offset_x, subtitle_offset_y)
 
         # 자막 클립 생성
         progress(0.60, desc="자막 클립 생성 중...")
@@ -554,43 +596,63 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
                 prog = 0.60 + (i / len(subtitle_timings)) * 0.15
                 progress(prog, desc=f'자막 클립 [{i + 1}/{len(subtitle_timings)}]')
 
-            # 한글 폰트 경로 - 전역 변수 우선 사용
+            # 한글 폰트 선택 - ImageMagick용 (시스템 폰트 우선)
             selected_font = None
-            if KOREAN_FONT_PATH and os.path.exists(KOREAN_FONT_PATH):
-                selected_font = f"@{KOREAN_FONT_PATH}"
-                print(f"선택된 폰트: {KOREAN_FONT_PATH}")
-            else:
-                # 폴백: 다시 검색
-                font_candidates = [
-                    os.path.join(FONTS_DIR, 'NotoSansKR-Bold.ttf'),
-                    '/usr/share/fonts/truetype/noto/NotoSansKR-Bold.ttf',
-                    '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc',
-                    '/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc',
+
+            # Linux/Kaggle: 시스템에 설치된 폰트를 우선 사용 (apt-get install fonts-nanum)
+            # ImageMagick은 폰트 이름으로도 접근 가능
+            if platform.system() != 'Windows':
+                # 시스템 폰트 경로 (ImageMagick이 접근 가능한 폰트)
+                system_font_candidates = [
                     '/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf',
+                    '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+                    '/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc',
+                    '/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc',
+                ]
+                for font_path in system_font_candidates:
+                    if os.path.exists(font_path):
+                        selected_font = f"@{font_path}"
+                        print(f"시스템 폰트 선택: {font_path}")
+                        break
+
+                # 시스템 폰트 없으면 폰트 이름으로 시도
+                if not selected_font:
+                    # ImageMagick에서 폰트 이름으로 접근 시도
+                    selected_font = "NanumGothic-Bold"
+                    print(f"폰트 이름으로 시도: {selected_font}")
+            else:
+                # Windows: 로컬 폰트 파일 사용
+                font_candidates = [
                     'C:/Windows/Fonts/NotoSansKR-Bold.ttf',
                     'C:/Windows/Fonts/malgunbd.ttf',
+                    os.path.join(FONTS_DIR, 'NotoSansKR-Bold.ttf'),
                 ]
                 for font_path in font_candidates:
                     if os.path.exists(font_path):
                         selected_font = f"@{font_path}"
-                        print(f"폴백 폰트 선택: {font_path}")
+                        print(f"Windows 폰트 선택: {font_path}")
                         break
 
             if not selected_font:
-                print("경고: 한글 폰트를 찾을 수 없습니다! 기본 폰트 사용")
+                print("경고: 한글 폰트를 찾을 수 없습니다! ImageMagick 기본 폰트 사용")
+                selected_font = None
 
             try:
-                print(f"TextClip 생성 시도: font={selected_font}, size={font_size}")
-                txt_clip = TextClip(
-                    line,
-                    fontsize=font_size,
-                    color='white',
-                    font=selected_font,
-                    stroke_color='black',
-                    stroke_width=3,
-                    method='caption',
-                    size=(video_width - 100, None)
-                )
+                print(f"TextClip 생성 시도: font={selected_font}, size={font_size}, text={line[:30]}")
+
+                # font 파라미터 설정 (None이면 생략하여 ImageMagick 기본 사용)
+                txt_kwargs = {
+                    'fontsize': font_size,
+                    'color': 'white',
+                    'stroke_color': 'black',
+                    'stroke_width': 3,
+                    'method': 'caption',
+                    'size': (video_width - 100, None)
+                }
+                if selected_font:
+                    txt_kwargs['font'] = selected_font
+
+                txt_clip = TextClip(line, **txt_kwargs)
                 print(f"TextClip 생성 성공: size={txt_clip.size}")
 
                 # 자막 배경 박스 추가 (화면 전체 너비)
@@ -629,8 +691,11 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
                 subtitle_clips.append(txt_clip)
                 print(f"자막 추가: [{start_time:.2f}s - {end_time:.2f}s] {line[:20]}...")
             except Exception as e:
+                import traceback
                 print(f"자막 클립 생성 실패 [{i}]: {e}")
+                traceback.print_exc()
 
+        print(f"총 자막 클립 수: {len(subtitle_clips)}")
         progress(0.75, desc="영상 합성 중...")
         final_clip = CompositeVideoClip([bg_clip] + subtitle_clips)
 
@@ -690,6 +755,7 @@ def load_subtitle_text(file):
 
 
 def generate_preview(subtitle_text, background_file, resolution, font_size, subtitle_position,
+                     subtitle_offset_x, subtitle_offset_y,
                      use_subtitle_bg, subtitle_bg_opacity, subtitle_bg_padding):
     """자막이 포함된 미리보기 이미지 생성"""
     try:
@@ -716,6 +782,21 @@ def generate_preview(subtitle_text, background_file, resolution, font_size, subt
                 subtitle_bg_padding = 20
         except (ValueError, TypeError):
             subtitle_bg_padding = 20
+
+        # X/Y 오프셋 처리 (% 단위)
+        try:
+            subtitle_offset_x = float(subtitle_offset_x) if subtitle_offset_x is not None else 0
+            if subtitle_offset_x < -50 or subtitle_offset_x > 50:
+                subtitle_offset_x = 0
+        except (ValueError, TypeError):
+            subtitle_offset_x = 0
+
+        try:
+            subtitle_offset_y = float(subtitle_offset_y) if subtitle_offset_y is not None else 0
+            if subtitle_offset_y < -50 or subtitle_offset_y > 50:
+                subtitle_offset_y = 0
+        except (ValueError, TypeError):
+            subtitle_offset_y = 0
 
         resolution = resolution if resolution else "1920x1080"
 
@@ -803,6 +884,10 @@ def generate_preview(subtitle_text, background_file, resolution, font_size, subt
 
         # 자막 위치 계산
         margin = 50
+        # 오프셋 픽셀 계산 (해상도의 %)
+        offset_x_px = int(video_width * subtitle_offset_x / 100)
+        offset_y_px = int(video_height * subtitle_offset_y / 100)
+
         positions = {
             '상단-왼쪽': (margin, margin),
             '상단-중앙': ((video_width - text_width) // 2, margin),
@@ -814,7 +899,10 @@ def generate_preview(subtitle_text, background_file, resolution, font_size, subt
             '하단-중앙': ((video_width - text_width) // 2, video_height - text_height - margin),
             '하단-오른쪽': (video_width - text_width - margin, video_height - text_height - margin),
         }
-        text_x, text_y = positions.get(subtitle_position, positions['하단-중앙'])
+        base_x, base_y = positions.get(subtitle_position, positions['하단-중앙'])
+        # 오프셋 적용
+        text_x = base_x + offset_x_px
+        text_y = base_y + offset_y_px
 
         # 자막 배경 박스 그리기 (화면 전체 너비, 자막 높이 + 패딩)
         if use_subtitle_bg:
@@ -914,6 +1002,8 @@ def create_ui():
             resolution_select = gr.Dropdown(choices=resolutions, value="1920x1080", label="해상도", visible=False, scale=2)
             font_size_slider = gr.Number(value=70, label="폰트", step=5, visible=False, scale=1)
             position_select = gr.Dropdown(choices=subtitle_positions, value="중앙", label="자막위치", visible=False, scale=2)
+            subtitle_offset_x = gr.Number(value=0, label="X오프셋(%)", step=1, visible=False, scale=1)
+            subtitle_offset_y = gr.Number(value=0, label="Y오프셋(%)", step=1, visible=False, scale=1)
             use_subtitle_bg = gr.Checkbox(label="자막배경 사용", value=True, visible=False, scale=2, min_width=120)
             subtitle_bg_opacity = gr.Number(value=0.6, label="투명도", step=0.1, visible=False, scale=1)
             subtitle_bg_padding = gr.Number(value=20, label="여백", step=5, visible=False, scale=1)
@@ -925,6 +1015,10 @@ def create_ui():
             audio_output = gr.Audio(label="결과 음성", type="filepath")
             video_output = gr.Video(label="결과 영상", visible=False)
 
+        # 다운로드 파일 (Kaggle용)
+        with gr.Row():
+            download_file = gr.File(label="📥 다운로드", visible=False)
+
         # 이벤트 연결
         def get_lang_code(lang_name):
             lang_map = {"한국어": "ko", "English": "en", "Español": "es", "Português": "pt", "Français": "fr"}
@@ -933,12 +1027,13 @@ def create_ui():
         # 배경 파일 첨부 시 영상 설정 표시/숨김
         def toggle_video_settings(file):
             visible = file is not None
-            return [gr.update(visible=visible)] * 7  # 6개 영상설정 + 1개 영상출력
+            return [gr.update(visible=visible)] * 9  # 8개 영상설정 + 1개 영상출력
 
         background_file.change(
             fn=toggle_video_settings,
             inputs=[background_file],
             outputs=[resolution_select, font_size_slider, position_select,
+                     subtitle_offset_x, subtitle_offset_y,
                      use_subtitle_bg, subtitle_bg_opacity, subtitle_bg_padding, video_output]
         )
 
@@ -946,6 +1041,7 @@ def create_ui():
         preview_inputs = [
             subtitle_text, background_file, resolution_select,
             font_size_slider, position_select,
+            subtitle_offset_x, subtitle_offset_y,
             use_subtitle_bg, subtitle_bg_opacity, subtitle_bg_padding
         ]
 
@@ -957,7 +1053,7 @@ def create_ui():
                 outputs=[preview_image]
             )
 
-        for num_input in [font_size_slider, subtitle_bg_opacity, subtitle_bg_padding]:
+        for num_input in [font_size_slider, subtitle_bg_opacity, subtitle_bg_padding, subtitle_offset_x, subtitle_offset_y]:
             num_input.change(
                 fn=generate_preview,
                 inputs=preview_inputs,
@@ -991,7 +1087,8 @@ def create_ui():
 
         # 생성 버튼 클릭
         def generate_content(tts_txt, sub_txt, voice, lang, speed, step,
-                             bg_file, res, font, pos, use_bg, bg_opacity, bg_pad, script_file):
+                             bg_file, res, font, pos, offset_x, offset_y,
+                             use_bg, bg_opacity, bg_pad, script_file):
             lang_code = get_lang_code(lang)
 
             # 출력 파일명 결정 (대본 파일명 기반)
@@ -1004,27 +1101,30 @@ def create_ui():
                 # 영상 생성
                 video_path, status = create_video(
                     tts_txt, sub_txt, voice, lang_code, speed, step,
-                    bg_file.name, res, font, pos, use_bg, bg_opacity, bg_pad,
+                    bg_file.name, res, font, pos, offset_x, offset_y,
+                    use_bg, bg_opacity, bg_pad,
                     output_name=base_name
                 )
-                return None, video_path, status
+                # 다운로드 파일도 함께 반환
+                return None, video_path, status, gr.update(value=video_path, visible=True) if video_path else gr.update(visible=False)
             else:
                 # 음성만 생성
                 audio_path, status = synthesize_speech(
                     tts_txt, voice, lang_code, speed, step,
                     output_name=base_name
                 )
-                return audio_path, None, status
+                # 다운로드 파일도 함께 반환
+                return audio_path, None, status, gr.update(value=audio_path, visible=True) if audio_path else gr.update(visible=False)
 
         generate_btn.click(
             fn=generate_content,
             inputs=[
                 tts_text, subtitle_text, voice_select, lang_select,
                 speed_slider, step_slider, background_file, resolution_select,
-                font_size_slider, position_select,
+                font_size_slider, position_select, subtitle_offset_x, subtitle_offset_y,
                 use_subtitle_bg, subtitle_bg_opacity, subtitle_bg_padding, tts_file
             ],
-            outputs=[audio_output, video_output, status_output]
+            outputs=[audio_output, video_output, status_output, download_file]
         )
 
     return demo
