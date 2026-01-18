@@ -820,6 +820,156 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
         return None, f"❌ 오류 발생: {str(e)}"
 
 
+def create_solid_color_video(duration_hours, duration_minutes, duration_seconds,
+                              bg_color, resolution, show_clock, clock_color,
+                              progress=gr.Progress()):
+    """단색 배경 영상 생성 (검정화면)"""
+    try:
+        from moviepy.editor import ColorClip, CompositeVideoClip, ImageClip
+        from PIL import Image as PILImage, ImageDraw, ImageFont
+
+        progress(0.05, desc="설정 확인 중...")
+
+        # 총 시간 계산 (초)
+        try:
+            hours = int(duration_hours) if duration_hours else 0
+            minutes = int(duration_minutes) if duration_minutes else 0
+            seconds = int(duration_seconds) if duration_seconds else 0
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+        except (ValueError, TypeError):
+            return None, "시간을 올바르게 입력해주세요."
+
+        if total_seconds <= 0:
+            return None, "1초 이상의 시간을 입력해주세요."
+
+        if total_seconds > 3600 * 3:  # 최대 3시간
+            return None, "최대 3시간까지만 생성 가능합니다."
+
+        # 해상도 파싱
+        resolution = resolution if resolution else "1920x1080"
+        video_width, video_height = map(int, resolution.split('x'))
+
+        # 배경색 파싱
+        def hex_to_rgb(hex_color):
+            if not hex_color:
+                return (0, 0, 0)
+            hex_color = hex_color.lstrip('#')
+            if len(hex_color) == 3:
+                hex_color = ''.join([c*2 for c in hex_color])
+            try:
+                return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+            except (ValueError, IndexError):
+                return (0, 0, 0)
+
+        bg_rgb = hex_to_rgb(bg_color) if bg_color else (0, 0, 0)
+        clock_rgb = hex_to_rgb(clock_color) if clock_color else (255, 255, 255)
+
+        progress(0.10, desc="배경 클립 생성 중...")
+
+        # 배경 클립 생성
+        bg_clip = ColorClip(size=(video_width, video_height), color=bg_rgb).set_duration(total_seconds)
+
+        # 시계 표시 여부
+        if show_clock:
+            progress(0.15, desc="시계 프레임 생성 중...")
+
+            # 폰트 찾기
+            font_size = 120
+            font_candidates = [
+                os.path.join(FONTS_DIR, 'NotoSansKR-Bold.ttf'),
+                '/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf',
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                'C:/Windows/Fonts/NotoSansKR-Bold.ttf',
+                'C:/Windows/Fonts/arial.ttf',
+                'C:/Windows/Fonts/malgunbd.ttf',
+            ]
+
+            pil_font = None
+            for font_path in font_candidates:
+                if os.path.exists(font_path):
+                    try:
+                        pil_font = ImageFont.truetype(font_path, font_size)
+                        break
+                    except Exception:
+                        continue
+
+            if pil_font is None:
+                pil_font = ImageFont.load_default()
+
+            # 시계 프레임 생성 함수
+            def make_clock_frame(t):
+                # 현재 시간 계산
+                elapsed = int(t)
+                h = elapsed // 3600
+                m = (elapsed % 3600) // 60
+                s = elapsed % 60
+                time_str = f"{h:02d}:{m:02d}:{s:02d}"
+
+                # 이미지 생성
+                img = PILImage.new('RGBA', (video_width, video_height), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(img)
+
+                # 텍스트 크기 측정
+                bbox = draw.textbbox((0, 0), time_str, font=pil_font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+
+                # 중앙 위치
+                text_x = (video_width - text_width) // 2
+                text_y = (video_height - text_height) // 2
+
+                # 텍스트 그리기
+                draw.text((text_x, text_y), time_str, font=pil_font, fill=(*clock_rgb, 255))
+
+                return np.array(img)
+
+            # 1초 간격으로 시계 클립 생성
+            clock_clips = []
+            total_frames = total_seconds
+
+            for i in range(total_frames):
+                if i % 60 == 0:  # 1분마다 진행률 업데이트
+                    prog = 0.15 + (i / total_frames) * 0.70
+                    progress(prog, desc=f"시계 프레임 생성 중... {i}/{total_frames}초")
+
+                frame = make_clock_frame(i)
+                clip = ImageClip(frame, transparent=True).set_duration(1).set_start(i)
+                clock_clips.append(clip)
+
+            progress(0.85, desc="영상 합성 중...")
+            final_clip = CompositeVideoClip([bg_clip] + clock_clips)
+        else:
+            final_clip = bg_clip
+
+        progress(0.90, desc="영상 인코딩 중... (시간이 걸릴 수 있습니다)")
+
+        # 출력 파일
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"solid_{timestamp}.mp4"
+        filepath = os.path.join(OUTPUT_DIR, filename)
+
+        final_clip.write_videofile(
+            filepath,
+            fps=1 if show_clock else 1,  # 시계는 1fps로 충분
+            codec='libx264',
+            audio=False,
+            verbose=False,
+            logger=None
+        )
+
+        final_clip.close()
+
+        progress(1.0, desc="완료!")
+
+        duration_str = f"{hours}시간 {minutes}분 {seconds}초" if hours > 0 else f"{minutes}분 {seconds}초"
+        return filepath, f"✅ 영상 생성 완료!\n파일: {filename}\n길이: {duration_str}"
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, f"❌ 오류 발생: {str(e)}"
+
+
 def load_tts_text(file):
     """TTS 텍스트 파일 로드"""
     if file is None:
@@ -1049,34 +1199,37 @@ def create_ui():
     with gr.Blocks(title="Supertonic TTS") as demo:
         gr.Markdown("# Supertonic TTS")
 
-        # 1행: 파일 업로드 (대본, 자막, 배경)
-        with gr.Row():
-            tts_file = gr.File(
-                label="대본 파일 (TXT/DOCX)",
-                file_types=[".txt", ".docx"]
-            )
-            subtitle_file = gr.File(
-                label="자막 파일 (TXT/DOCX)",
-                file_types=[".txt", ".docx"]
-            )
-            background_file = gr.File(
-                label="배경 (이미지/영상)",
-                file_types=["image", "video"]
-            )
+        with gr.Tabs():
+            # === 탭 1: TTS + 영상 생성 ===
+            with gr.TabItem("TTS + 영상"):
+                # 1행: 파일 업로드 (대본, 자막, 배경)
+                with gr.Row():
+                    tts_file = gr.File(
+                        label="대본 파일 (TXT/DOCX)",
+                        file_types=[".txt", ".docx"]
+                    )
+                    subtitle_file = gr.File(
+                        label="자막 파일 (TXT/DOCX)",
+                        file_types=[".txt", ".docx"]
+                    )
+                    background_file = gr.File(
+                        label="배경 (이미지/영상)",
+                        file_types=["image", "video"]
+                    )
 
-        # 2행: 텍스트 입력 + 미리보기
-        with gr.Row():
-            tts_text = gr.Textbox(
-                label="대본 (음성 변환용)",
-                placeholder="음성으로 변환할 텍스트를 입력하거나 파일을 첨부하세요...",
-                lines=10
-            )
-            subtitle_text = gr.Textbox(
-                label="자막 (비워두면 대본 사용)",
-                placeholder="화면에 표시될 자막...",
-                lines=10
-            )
-            preview_image = gr.Image(label="미리보기", height=280)
+                # 2행: 텍스트 입력 + 미리보기
+                with gr.Row():
+                    tts_text = gr.Textbox(
+                        label="대본 (음성 변환용)",
+                        placeholder="음성으로 변환할 텍스트를 입력하거나 파일을 첨부하세요...",
+                        lines=10
+                    )
+                    subtitle_text = gr.Textbox(
+                        label="자막 (비워두면 대본 사용)",
+                        placeholder="화면에 표시될 자막...",
+                        lines=10
+                    )
+                    preview_image = gr.Image(label="미리보기", height=280)
 
         # 3행: 음성 설정 + 영상 설정 + 상태 + 생성버튼 (한 줄)
         with gr.Row():
@@ -1216,6 +1369,44 @@ def create_ui():
             ],
             outputs=[audio_output, video_output, status_output, download_file]
         )
+
+        # === 탭 2: 단색 배경 영상 (검정화면) ===
+        with gr.TabItem("단색 배경 영상"):
+            gr.Markdown("### 단색 배경 영상 생성\n지정한 시간 동안 단색 배경만 나오는 영상을 생성합니다.")
+
+            with gr.Row():
+                solid_hours = gr.Number(value=0, label="시간", minimum=0, maximum=3, step=1, scale=1)
+                solid_minutes = gr.Number(value=1, label="분", minimum=0, maximum=59, step=1, scale=1)
+                solid_seconds = gr.Number(value=0, label="초", minimum=0, maximum=59, step=1, scale=1)
+                solid_resolution = gr.Dropdown(choices=resolutions, value="1920x1080", label="해상도", scale=2)
+
+            with gr.Row():
+                solid_bg_color = gr.ColorPicker(value="#000000", label="배경 색상", scale=1)
+                solid_show_clock = gr.Checkbox(label="디지털 시계 표시", value=False, scale=1)
+                solid_clock_color = gr.ColorPicker(value="#FFFFFF", label="시계 색상", scale=1)
+                solid_status = gr.Textbox(label="상태", interactive=False, scale=2)
+                solid_generate_btn = gr.Button("생성하기", variant="primary", scale=1)
+
+            with gr.Row():
+                solid_video_output = gr.Video(label="결과 영상")
+                solid_download = gr.File(label="다운로드")
+
+            # 단색 배경 영상 생성 이벤트
+            def generate_solid_video(hours, minutes, seconds, bg_color, resolution, show_clock, clock_color):
+                video_path, status = create_solid_color_video(
+                    hours, minutes, seconds, bg_color, resolution, show_clock, clock_color
+                )
+                if video_path:
+                    return video_path, status, video_path
+                else:
+                    return None, status, None
+
+            solid_generate_btn.click(
+                fn=generate_solid_video,
+                inputs=[solid_hours, solid_minutes, solid_seconds, solid_bg_color,
+                        solid_resolution, solid_show_clock, solid_clock_color],
+                outputs=[solid_video_output, solid_status, solid_download]
+            )
 
     return demo
 
