@@ -385,13 +385,13 @@ def synthesize_speech(text, voice_label, language, speed, total_step, progress=g
 def create_video(tts_text, subtitle_text, voice_label, language, speed, total_step,
                  background_file, resolution, font_size, subtitle_position,
                  subtitle_offset_x, subtitle_offset_y,
-                 use_subtitle_bg, subtitle_bg_opacity, subtitle_bg_padding,
+                 use_shape, shape_x1, shape_y1, shape_x2, shape_y2, shape_opacity,
                  progress=gr.Progress(), output_name=None):
     """영상 생성"""
     print(f"=== create_video 호출 ===")
-    print(f"use_subtitle_bg={use_subtitle_bg} (type={type(use_subtitle_bg)})")
+    print(f"use_shape={use_shape}, shape=({shape_x1}%,{shape_y1}%) ~ ({shape_x2}%,{shape_y2}%), opacity={shape_opacity}")
     print(f"subtitle_position={subtitle_position}, offset_x={subtitle_offset_x}%, offset_y={subtitle_offset_y}%")
-    print(f"font_size={font_size}, opacity={subtitle_bg_opacity}, padding={subtitle_bg_padding}")
+    print(f"font_size={font_size}")
 
     if not tts_text or not tts_text.strip():
         return None, "TTS 텍스트를 입력해주세요."
@@ -407,19 +407,41 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
     except (ValueError, TypeError):
         font_size = 70
 
+    # 도형 좌표 처리 (% 단위, 0 ~ 100 범위)
     try:
-        subtitle_bg_opacity = float(subtitle_bg_opacity) if subtitle_bg_opacity is not None else 0.6
-        if subtitle_bg_opacity < 0.1 or subtitle_bg_opacity > 1.0:
-            subtitle_bg_opacity = 0.6
+        shape_x1 = float(shape_x1) if shape_x1 is not None else 0
+        if shape_x1 < 0 or shape_x1 > 100:
+            shape_x1 = 0
     except (ValueError, TypeError):
-        subtitle_bg_opacity = 0.6
+        shape_x1 = 0
 
     try:
-        subtitle_bg_padding = int(subtitle_bg_padding) if subtitle_bg_padding is not None else 20
-        if subtitle_bg_padding < 0 or subtitle_bg_padding > 100:
-            subtitle_bg_padding = 20
+        shape_y1 = float(shape_y1) if shape_y1 is not None else 0
+        if shape_y1 < 0 or shape_y1 > 100:
+            shape_y1 = 0
     except (ValueError, TypeError):
-        subtitle_bg_padding = 20
+        shape_y1 = 0
+
+    try:
+        shape_x2 = float(shape_x2) if shape_x2 is not None else 100
+        if shape_x2 < 0 or shape_x2 > 100:
+            shape_x2 = 100
+    except (ValueError, TypeError):
+        shape_x2 = 100
+
+    try:
+        shape_y2 = float(shape_y2) if shape_y2 is not None else 100
+        if shape_y2 < 0 or shape_y2 > 100:
+            shape_y2 = 100
+    except (ValueError, TypeError):
+        shape_y2 = 100
+
+    try:
+        shape_opacity = float(shape_opacity) if shape_opacity is not None else 0.5
+        if shape_opacity < 0.0 or shape_opacity > 1.0:
+            shape_opacity = 0.5
+    except (ValueError, TypeError):
+        shape_opacity = 0.5
 
     # X/Y 오프셋 처리 (% 단위, -50 ~ 50 범위)
     try:
@@ -541,6 +563,27 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
         else:
             bg_clip = ColorClip(size=(video_width, video_height), color=(26, 26, 46)).set_duration(audio_duration)
 
+        # 도형 클립 생성 (사용자 지정 사각형)
+        shape_clip = None
+        if use_shape and shape_x1 != shape_x2 and shape_y1 != shape_y2:
+            # % 좌표를 픽셀로 변환
+            px_x1 = int(video_width * min(shape_x1, shape_x2) / 100)
+            px_y1 = int(video_height * min(shape_y1, shape_y2) / 100)
+            px_x2 = int(video_width * max(shape_x1, shape_x2) / 100)
+            px_y2 = int(video_height * max(shape_y1, shape_y2) / 100)
+
+            shape_w = px_x2 - px_x1
+            shape_h = px_y2 - px_y1
+
+            if shape_w > 0 and shape_h > 0:
+                shape_clip = ColorClip(
+                    size=(shape_w, shape_h),
+                    color=(0, 0, 0)
+                ).set_opacity(shape_opacity)
+                shape_clip = shape_clip.set_duration(audio_duration)
+                shape_clip = shape_clip.set_position((px_x1, px_y1))
+                print(f"도형 추가: ({px_x1},{px_y1}) ~ ({px_x2},{px_y2}), opacity={shape_opacity}")
+
         # 자막 위치 계산
         def get_subtitle_pos(pos, width, height, fsize, offset_x_pct, offset_y_pct):
             """자막 위치 계산 (오프셋은 해상도의 % 단위)"""
@@ -648,24 +691,14 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
 
                 # 외곽선 두께
                 outline_width = 3
-                padding = int(subtitle_bg_padding) if use_subtitle_bg else 10
 
-                # 이미지 크기: 자막 배경 사용 시 화면 전체 너비
-                if use_subtitle_bg:
-                    img_width = video_width
-                    img_height = text_height + padding * 2 + outline_width * 2
-                else:
-                    img_width = text_width + outline_width * 2 + 20
-                    img_height = text_height + outline_width * 2 + 10
+                # 이미지 크기 (자막 텍스트 + 여백)
+                img_width = text_width + outline_width * 2 + 20
+                img_height = text_height + outline_width * 2 + 10
 
                 # RGBA 이미지 생성 (투명 배경)
                 subtitle_img = PILImage.new('RGBA', (img_width, img_height), (0, 0, 0, 0))
                 draw = ImageDraw.Draw(subtitle_img)
-
-                # 자막 배경 박스 (선택적)
-                if use_subtitle_bg:
-                    alpha = int(255 * subtitle_bg_opacity)
-                    draw.rectangle([0, 0, img_width, img_height], fill=(0, 0, 0, alpha))
 
                 # 텍스트 위치 계산 (이미지 내 중앙)
                 text_x = (img_width - text_width) // 2
@@ -688,24 +721,15 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
                 txt_clip = txt_clip.set_duration(end_time - start_time)
 
                 # 자막 위치 계산
-                if use_subtitle_bg:
-                    # 배경 사용 시: 가로는 0 (전체 너비), 세로는 txt_position 기준
-                    clip_x = 0
-                    if txt_position[1] == 'center':
-                        clip_y = (video_height - img_height) // 2
-                    else:
-                        clip_y = txt_position[1] - padding if isinstance(txt_position[1], int) else video_height - img_height - 50
+                if txt_position[0] == 'center':
+                    clip_x = (video_width - img_width) // 2
                 else:
-                    # 배경 미사용 시: txt_position 기준
-                    if txt_position[0] == 'center':
-                        clip_x = (video_width - img_width) // 2
-                    else:
-                        clip_x = txt_position[0] if isinstance(txt_position[0], int) else 50
+                    clip_x = txt_position[0] if isinstance(txt_position[0], int) else 50
 
-                    if txt_position[1] == 'center':
-                        clip_y = (video_height - img_height) // 2
-                    else:
-                        clip_y = txt_position[1] if isinstance(txt_position[1], int) else video_height - img_height - 50
+                if txt_position[1] == 'center':
+                    clip_y = (video_height - img_height) // 2
+                else:
+                    clip_y = txt_position[1] if isinstance(txt_position[1], int) else video_height - img_height - 50
 
                 txt_clip = txt_clip.set_position((clip_x, clip_y))
                 txt_clip = txt_clip.set_start(start_time).set_end(end_time)
@@ -719,7 +743,14 @@ def create_video(tts_text, subtitle_text, voice_label, language, speed, total_st
 
         print(f"총 자막 클립 수: {len(subtitle_clips)}")
         progress(0.75, desc="영상 합성 중...")
-        final_clip = CompositeVideoClip([bg_clip] + subtitle_clips)
+
+        # 클립 합성 (배경 -> 도형 -> 자막 순서)
+        all_clips = [bg_clip]
+        if shape_clip is not None:
+            all_clips.append(shape_clip)
+        all_clips.extend(subtitle_clips)
+
+        final_clip = CompositeVideoClip(all_clips)
 
         progress(0.78, desc="오디오 추가 중...")
         audio_clip = AudioFileClip(temp_audio_path)
@@ -778,7 +809,7 @@ def load_subtitle_text(file):
 
 def generate_preview(subtitle_text, background_file, resolution, font_size, subtitle_position,
                      subtitle_offset_x, subtitle_offset_y,
-                     use_subtitle_bg, subtitle_bg_opacity, subtitle_bg_padding):
+                     use_shape, shape_x1, shape_y1, shape_x2, shape_y2, shape_opacity):
     """자막이 포함된 미리보기 이미지 생성"""
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -790,20 +821,6 @@ def generate_preview(subtitle_text, background_file, resolution, font_size, subt
                 font_size = 70
         except (ValueError, TypeError):
             font_size = 70
-
-        try:
-            subtitle_bg_opacity = float(subtitle_bg_opacity) if subtitle_bg_opacity is not None else 0.6
-            if subtitle_bg_opacity < 0.1 or subtitle_bg_opacity > 1.0:
-                subtitle_bg_opacity = 0.6
-        except (ValueError, TypeError):
-            subtitle_bg_opacity = 0.6
-
-        try:
-            subtitle_bg_padding = int(subtitle_bg_padding) if subtitle_bg_padding is not None else 20
-            if subtitle_bg_padding < 0 or subtitle_bg_padding > 100:
-                subtitle_bg_padding = 20
-        except (ValueError, TypeError):
-            subtitle_bg_padding = 20
 
         # X/Y 오프셋 처리 (% 단위)
         try:
@@ -819,6 +836,16 @@ def generate_preview(subtitle_text, background_file, resolution, font_size, subt
                 subtitle_offset_y = 0
         except (ValueError, TypeError):
             subtitle_offset_y = 0
+
+        # 도형 좌표 처리
+        try:
+            shape_x1 = float(shape_x1) if shape_x1 is not None else 0
+            shape_y1 = float(shape_y1) if shape_y1 is not None else 0
+            shape_x2 = float(shape_x2) if shape_x2 is not None else 100
+            shape_y2 = float(shape_y2) if shape_y2 is not None else 100
+            shape_opacity = float(shape_opacity) if shape_opacity is not None else 0.5
+        except (ValueError, TypeError):
+            shape_x1, shape_y1, shape_x2, shape_y2, shape_opacity = 0, 0, 100, 100, 0.5
 
         resolution = resolution if resolution else "1920x1080"
 
@@ -926,23 +953,19 @@ def generate_preview(subtitle_text, background_file, resolution, font_size, subt
         text_x = base_x + offset_x_px
         text_y = base_y + offset_y_px
 
-        # 자막 배경 박스 그리기 (화면 전체 너비, 자막 높이 + 패딩)
-        if use_subtitle_bg:
-            padding = int(subtitle_bg_padding)
-            # 가로: 화면 전체 + 여유, 세로: 자막 높이 + 패딩*2
-            bg_h = text_height + padding * 2
-            bg_x1 = -5
-            bg_x2 = video_width + 5
+        # 도형 그리기 (사용자 지정 사각형)
+        if use_shape and shape_x1 != shape_x2 and shape_y1 != shape_y2:
+            # % 좌표를 픽셀로 변환
+            px_x1 = int(video_width * min(shape_x1, shape_x2) / 100)
+            px_y1 = int(video_height * min(shape_y1, shape_y2) / 100)
+            px_x2 = int(video_width * max(shape_x1, shape_x2) / 100)
+            px_y2 = int(video_height * max(shape_y1, shape_y2) / 100)
 
-            # 배경 박스의 Y 위치 계산 (자막이 박스 정중앙에 오도록)
-            bg_y1 = text_y - padding
-            bg_y2 = bg_y1 + bg_h
-
-            # 반투명 배경
+            # 반투명 사각형
             overlay = Image.new('RGBA', bg_img.size, (0, 0, 0, 0))
             overlay_draw = ImageDraw.Draw(overlay)
-            alpha = int(255 * subtitle_bg_opacity)
-            overlay_draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill=(0, 0, 0, alpha))
+            alpha = int(255 * shape_opacity)
+            overlay_draw.rectangle([px_x1, px_y1, px_x2, px_y2], fill=(0, 0, 0, alpha))
             bg_img = Image.alpha_composite(bg_img.convert('RGBA'), overlay)
 
         # 텍스트 그리기 (검정 외곽선 + 흰색 본문)
@@ -1026,9 +1049,12 @@ def create_ui():
             position_select = gr.Dropdown(choices=subtitle_positions, value="중앙", label="자막위치", visible=False, scale=2)
             subtitle_offset_x = gr.Number(value=0, label="X오프셋(%)", step=1, visible=False, scale=1)
             subtitle_offset_y = gr.Number(value=0, label="Y오프셋(%)", step=1, visible=False, scale=1)
-            use_subtitle_bg = gr.Checkbox(label="자막배경 사용", value=True, visible=False, scale=2, min_width=120)
-            subtitle_bg_opacity = gr.Number(value=0.6, label="투명도", step=0.1, visible=False, scale=1)
-            subtitle_bg_padding = gr.Number(value=20, label="여백", step=5, visible=False, scale=1)
+            use_shape = gr.Checkbox(label="도형삽입", value=False, visible=False, scale=1, min_width=80)
+            shape_x1 = gr.Number(value=0, label="X1(%)", step=1, visible=False, scale=1)
+            shape_y1 = gr.Number(value=40, label="Y1(%)", step=1, visible=False, scale=1)
+            shape_x2 = gr.Number(value=100, label="X2(%)", step=1, visible=False, scale=1)
+            shape_y2 = gr.Number(value=60, label="Y2(%)", step=1, visible=False, scale=1)
+            shape_opacity = gr.Number(value=0.5, label="도형투명도", step=0.1, visible=False, scale=1)
             status_output = gr.Textbox(label="상태", interactive=False, scale=2)
             generate_btn = gr.Button("생성하기", variant="primary", scale=1)
 
@@ -1049,14 +1075,14 @@ def create_ui():
         # 배경 파일 첨부 시 영상 설정 표시/숨김
         def toggle_video_settings(file):
             visible = file is not None
-            return [gr.update(visible=visible)] * 9  # 8개 영상설정 + 1개 영상출력
+            return [gr.update(visible=visible)] * 12  # 11개 영상설정 + 1개 영상출력
 
         background_file.change(
             fn=toggle_video_settings,
             inputs=[background_file],
             outputs=[resolution_select, font_size_slider, position_select,
                      subtitle_offset_x, subtitle_offset_y,
-                     use_subtitle_bg, subtitle_bg_opacity, subtitle_bg_padding, video_output]
+                     use_shape, shape_x1, shape_y1, shape_x2, shape_y2, shape_opacity, video_output]
         )
 
         # 미리보기 입력 컴포넌트 리스트
@@ -1064,18 +1090,18 @@ def create_ui():
             subtitle_text, background_file, resolution_select,
             font_size_slider, position_select,
             subtitle_offset_x, subtitle_offset_y,
-            use_subtitle_bg, subtitle_bg_opacity, subtitle_bg_padding
+            use_shape, shape_x1, shape_y1, shape_x2, shape_y2, shape_opacity
         ]
 
         # 실시간 미리보기: 설정 변경 시 자동 업데이트
-        for component in [position_select, use_subtitle_bg, resolution_select]:
+        for component in [position_select, use_shape, resolution_select]:
             component.change(
                 fn=generate_preview,
                 inputs=preview_inputs,
                 outputs=[preview_image]
             )
 
-        for num_input in [font_size_slider, subtitle_bg_opacity, subtitle_bg_padding, subtitle_offset_x, subtitle_offset_y]:
+        for num_input in [font_size_slider, shape_x1, shape_y1, shape_x2, shape_y2, shape_opacity, subtitle_offset_x, subtitle_offset_y]:
             num_input.change(
                 fn=generate_preview,
                 inputs=preview_inputs,
@@ -1110,7 +1136,7 @@ def create_ui():
         # 생성 버튼 클릭
         def generate_content(tts_txt, sub_txt, voice, lang, speed, step,
                              bg_file, res, font, pos, offset_x, offset_y,
-                             use_bg, bg_opacity, bg_pad, script_file):
+                             use_shp, shp_x1, shp_y1, shp_x2, shp_y2, shp_opacity, script_file):
             lang_code = get_lang_code(lang)
 
             # 출력 파일명 결정 (대본 파일명 기반)
@@ -1124,7 +1150,7 @@ def create_ui():
                 video_path, status = create_video(
                     tts_txt, sub_txt, voice, lang_code, speed, step,
                     bg_file.name, res, font, pos, offset_x, offset_y,
-                    use_bg, bg_opacity, bg_pad,
+                    use_shp, shp_x1, shp_y1, shp_x2, shp_y2, shp_opacity,
                     output_name=base_name
                 )
                 # 다운로드 파일도 함께 반환
@@ -1144,7 +1170,7 @@ def create_ui():
                 tts_text, subtitle_text, voice_select, lang_select,
                 speed_slider, step_slider, background_file, resolution_select,
                 font_size_slider, position_select, subtitle_offset_x, subtitle_offset_y,
-                use_subtitle_bg, subtitle_bg_opacity, subtitle_bg_padding, tts_file
+                use_shape, shape_x1, shape_y1, shape_x2, shape_y2, shape_opacity, tts_file
             ],
             outputs=[audio_output, video_output, status_output, download_file]
         )
