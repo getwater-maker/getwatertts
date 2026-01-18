@@ -1555,4 +1555,7 @@ if __name__ == '__main__':
 
     # Gradio 앱 시작
     demo = create_ui()
+    # queue(): 동시 요청 처리 활성화
+    # default_concurrency_limit: 동시 처리할 최대 요청 수 (GPU 메모리 고려)
+    demo.queue(default_concurrency_limit=2)
     demo.launch(server_name="0.0.0.0", server_port=7860, share=True)
