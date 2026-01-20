@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supertonic TTS</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 헤더 -->
+        <header class="header">
+            <h1 class="logo">Supertonic TTS</h1>
+            <span class="version">Desktop Edition</span>
+        </header>
+
+        <!-- 설정 바 -->
+        <div class="settings-panel">
+            <div class="settings-row">
+                <div class="setting-item">
+                    <label>언어</label>
+                    <select id="language">
+                        <option value="ko" selected>한국어</option>
+                        <option value="en">English</option>
+                        <option value="es">Español</option>
+                        <option value="pt">Português</option>
+                        <option value="fr">Français</option>
+                    </select>
+                </div>
+                <div class="setting-item">
+                    <label>음성</label>
+                    <select id="voice"></select>
+                </div>
+                <div class="setting-item">
+                    <label>품질</label>
+                    <input type="number" id="quality" value="5" min="1" max="10" step="1">
+                </div>
+                <div class="setting-item">
+                    <label>속도</label>
+                    <input type="number" id="speed" value="1.0" min="0.5" max="2.0" step="0.1">
+                </div>
+                <div class="setting-item">
+                    <label>대본</label>
+                    <label class="file-input-btn">
+                        <input type="file" id="script-file" accept=".txt,.docx" hidden>
+                        <span id="script-file-label">파일 선택</span>
+                    </label>
+                </div>
+                <div class="setting-item">
+                    <label>자막</label>
+                    <label class="file-input-btn subtitle-input-btn">
+                        <input type="file" id="subtitle-file" accept=".txt" hidden>
+                        <span id="subtitle-file-label">파일 선택</span>
+                    </label>
+                </div>
+                <div class="setting-item">
+                    <label>음성파일</label>
+                    <button type="button" class="file-input-btn audio-input-btn">
+                        <span id="audio-file-label">파일 선택</span>
+                    </button>
+                </div>
+                <div class="setting-item buttons-right">
+                    <button id="reset-btn" class="btn btn-reset" title="모든 작업 초기화">🔄 초기화</button>
+                    <button id="play-all-btn" class="btn btn-secondary" disabled>▶ 전체 듣기</button>
+                    <div class="export-dropdown">
+                        <button id="export-btn" class="btn btn-primary" disabled>💾 내보내기</button>
+                        <div id="export-menu" class="export-menu hidden">
+                            <button id="export-wav-btn" class="export-option">🎵 WAV</button>
+                            <button id="export-vrew-btn" class="export-option">🎬 Vrew</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 진행 상태 -->
+        <div id="progress-section" class="progress-section hidden">
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <div class="progress-info">
+                <p id="progress-text">준비 중...</p>
+                <button id="stop-btn" class="btn btn-stop hidden">⏹ 중단</button>
+            </div>
+        </div>
+
+        <!-- 자막 편집기 -->
+        <div class="editor-panel">
+            <!-- 탭 헤더 -->
+            <div class="tab-header">
+                <button class="tab-btn active" data-tab="voice">음성</button>
+                <button class="tab-btn" data-tab="subtitle">자막</button>
+                <span id="subtitle-file-info" class="subtitle-file-info"></span>
+            </div>
+
+            <!-- 음성 탭 -->
+            <div id="voice-tab" class="tab-content active">
+                <div id="voice-container" class="sentences-container">
+                    <div class="empty-state">
+                        <p>대본 파일을 선택하면 문장별로 TTS 변환이 시작됩니다.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 자막 탭 -->
+            <div id="subtitle-tab" class="tab-content">
+                <div id="subtitle-container" class="sentences-container">
+                    <div class="empty-state">
+                        <p>자막 파일이 없습니다. (파일명_자막.txt)</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 전체 듣기 플레이어 -->
+        <div id="player-section" class="player-section hidden">
+            <div class="player-controls">
+                <button id="player-prev" class="player-btn">⏮</button>
+                <button id="player-play" class="player-btn">▶</button>
+                <button id="player-next" class="player-btn">⏭</button>
+                <span id="player-status">0 / 0</span>
+                <div class="player-speed">
+                    <label>재생 속도:</label>
+                    <select id="player-speed-select">
+                        <option value="0.5">0.5x</option>
+                        <option value="0.75">0.75x</option>
+                        <option value="1.0" selected>1.0x</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="2.0">2.0x</option>
+                    </select>
+                </div>
+                <button id="player-close" class="player-btn player-close">✕</button>
+            </div>
+            <div class="player-progress">
+                <div id="player-progress-bar" class="player-progress-bar"></div>
+            </div>
+        </div>
+
+        <!-- 내보내기 결과 -->
+        <div id="export-result" class="export-result hidden">
+            <p id="export-message"></p>
+            <div class="export-buttons">
+                <button id="open-folder-btn" class="btn btn-secondary">📁 폴더 열기</button>
+                <button id="open-file-btn" class="btn btn-primary">📄 파일 열기</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/javascript" src="/eel.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

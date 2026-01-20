@@ -1,0 +1,25 @@
+# Supertonic TTS - Eel Desktop App Requirements
+# CPU only version
+
+# Core
+eel>=0.16.0
+numpy>=1.24.0
+soundfile>=0.12.0
+Pillow>=10.0.0
+python-docx>=1.0.0
+
+# TTS (ONNX Runtime - CPU Only)
+onnxruntime>=1.16.0
+
+# Whisper (CPU Only) + Stable-TS for Forced Alignment
+openai-whisper>=20231117
+stable-ts>=2.15.0
+
+# Video
+moviepy>=1.0.3
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+
+# PyTorch CPU (Whisper dependency)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0

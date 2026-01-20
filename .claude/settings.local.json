@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(powershell -Command \"Get-Item ''D:\\\\supertonic\\\\outputs\\\\tts_20260120_095011.wav'' | Select-Object Name, Length, LastWriteTime\")",
+      "Bash(python:*)",
+      "Bash(curl:*)",
+      "Bash(powershell -Command \"& { cd D:\\\\supertonic; .\\\\venv\\\\Scripts\\\\python.exe -c \"\"\nimport sys\nsys.path.insert\\(0, ''.''\\)\nimport json\nfrom unicodedata import normalize\n\n# unicode_indexer 로드\nwith open\\(''assets/onnx/unicode_indexer.json''\\) as f:\n    indexer = json.load\\(f\\)\n\n# 전처리 시뮬레이션\ntext = ''한결같은 너희들의 정성이''\ntext = normalize\\(''NFKD'', text\\)\ntext = text + ''.''\ntext = ''<ko>'' + text + ''</ko>''\n\nprint\\(''Preprocessed:'', repr\\(text\\)\\)\nprint\\(''Length:'', len\\(text\\)\\)\nprint\\(\\)\n\n# 인덱싱\nids = []\nfor ch in text:\n    val = ord\\(ch\\)\n    idx = indexer[val] if val < len\\(indexer\\) else -1\n    ids.append\\(idx\\)\n    if idx == -1:\n        print\\(f''MISSING: {ch} \\(U+{val:04X}\\)''\\)\n\nprint\\(\\)\nprint\\(''IDs:'', ids\\)\nprint\\(''Any -1?'', -1 in ids\\)\n\"\" }\")",
+      "Bash(powershell:*)"
+    ]
+  }
+}
