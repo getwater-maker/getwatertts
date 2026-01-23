@@ -354,6 +354,23 @@ select {
     color: #b45309;
 }
 
+.btn-warning {
+    background: linear-gradient(135deg, #f59e0b, #d97706);
+    color: white;
+    border: none;
+}
+
+.btn-warning:hover:not(:disabled) {
+    background: linear-gradient(135deg, #d97706, #b45309);
+    transform: translateY(-1px);
+}
+
+.btn-warning:disabled {
+    background: #4a4a5a;
+    color: #888;
+    cursor: not-allowed;
+}
+
 .btn-small {
     padding: 8px 14px;
     font-size: 13px;

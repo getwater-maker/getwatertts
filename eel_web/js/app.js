@@ -125,6 +125,7 @@ function initElements() {
     elements.quality = document.getElementById('quality');
     elements.speed = document.getElementById('speed');
     elements.playAllBtn = document.getElementById('play-all-btn');
+    elements.regenerateAllBtn = document.getElementById('regenerate-all-btn');
     elements.exportBtn = document.getElementById('export-btn');
     elements.progressSection = document.getElementById('progress-section');
     elements.progressFill = document.getElementById('progress-fill');
@@ -209,6 +210,9 @@ function initEventListeners() {
 
     // 전체 듣기
     elements.playAllBtn.addEventListener('click', startPlayAll);
+
+    // 전체 재생성 (음성 변경 후 모든 문장 다시 TTS)
+    elements.regenerateAllBtn.addEventListener('click', regenerateAllSentences);
 
     // 내보내기 드롭다운
     elements.exportBtn.addEventListener('click', toggleExportMenu);
@@ -1597,7 +1601,86 @@ async function processAllSentences() {
     if (completedCount > 0) {
         elements.playAllBtn.disabled = false;
         elements.exportBtn.disabled = false;
+        elements.regenerateAllBtn.disabled = false;
     }
+
+    isProcessing = false;
+    stopRequested = false;
+    elements.stopBtn.classList.add('hidden');
+
+    setTimeout(() => {
+        elements.progressSection.classList.add('hidden');
+    }, 2000);
+}
+
+// 전체 재생성 (음성 변경 후 모든 문장 다시 TTS)
+async function regenerateAllSentences() {
+    if (isProcessing) return;
+    if (voiceSentences.length === 0) {
+        alert('재생성할 문장이 없습니다.');
+        return;
+    }
+
+    // 확인 메시지
+    const voiceName = elements.voice.value;
+    if (!confirm(`현재 설정(${voiceName})으로 모든 문장을 다시 생성하시겠습니까?\n\n기존 음성 파일이 새로 생성됩니다.`)) {
+        return;
+    }
+
+    isProcessing = true;
+    stopRequested = false;
+
+    elements.progressSection.classList.remove('hidden');
+    elements.stopBtn.classList.remove('hidden');
+    elements.playAllBtn.disabled = true;
+    elements.exportBtn.disabled = true;
+    elements.regenerateAllBtn.disabled = true;
+
+    // 기존 오디오 캐시 초기화
+    Object.keys(audioCache).forEach(key => removeFromAudioCache(key));
+
+    const total = voiceSentences.length;
+
+    for (let i = 0; i < total; i++) {
+        const clip = voiceSentences[i];
+
+        // 중단 요청 확인
+        if (stopRequested) {
+            updateProgress(0, '재생성이 중단되었습니다.');
+            break;
+        }
+
+        updateProgress((i / total) * 100, `문장 ${i + 1}/${total} 재생성 중...`);
+        updateVoiceSentenceStatus(clip.id, '변환중...');
+
+        try {
+            const result = await synthesizeSentence(clip.id, i);
+            if (result.success) {
+                audioFiles[clip.id] = result.filepath;
+                if (result.duration) {
+                    audioDurations[clip.id] = result.duration;
+                }
+                updateVoiceSentenceStatus(clip.id, '완료', true);
+                updateTotalDuration();
+            } else {
+                updateVoiceSentenceStatus(clip.id, '실패');
+            }
+        } catch (error) {
+            console.error(`문장 ${i + 1} 재생성 실패:`, error);
+            updateVoiceSentenceStatus(clip.id, '실패');
+        }
+    }
+
+    if (!stopRequested) {
+        updateProgress(100, '전체 재생성 완료!');
+    }
+
+    const completedCount = Object.keys(audioFiles).length;
+    if (completedCount > 0) {
+        elements.playAllBtn.disabled = false;
+        elements.exportBtn.disabled = false;
+    }
+    elements.regenerateAllBtn.disabled = false;
 
     isProcessing = false;
     stopRequested = false;
@@ -1704,7 +1787,6 @@ async function playSentence(clipId, index) {
         currentSentenceAudio.pause();
         currentSentenceAudio.currentTime = 0;
         updatePlayButtonState(currentSentenceClipId, false);
-        hideInlinePlayer();
         currentSentenceAudio = null;
         currentSentenceClipId = null;
         return;
@@ -1723,36 +1805,19 @@ async function playSentence(clipId, index) {
         }
 
         currentSentenceAudio = new Audio(audioCache[clipId]);
-        currentSentenceAudio.playbackRate = parseFloat(elements.playerSpeedSelect.value);
+        currentSentenceAudio.playbackRate = 1.0;  // 문장 재생은 항상 정상 속도
         currentSentenceClipId = clipId;
-        playerMode = 'single';
-        currentPlayerIndex = index;
-
-        // 인라인 플레이어 표시 (단일 모드)
-        showInlinePlayer('single', index);
 
         // 재생 버튼 상태 업데이트
         updatePlayButtonState(clipId, true);
 
-        // 시간 업데이트
-        currentSentenceAudio.ontimeupdate = () => {
-            if (currentSentenceAudio && currentSentenceAudio.duration) {
-                const progress = (currentSentenceAudio.currentTime / currentSentenceAudio.duration) * 100;
-                elements.playerProgressBar.style.width = `${progress}%`;
-                elements.playerTime.textContent = formatPlayerTime(currentSentenceAudio.currentTime, currentSentenceAudio.duration);
-            }
-        };
-
         // 재생 완료 시 상태 초기화
         currentSentenceAudio.onended = () => {
             updatePlayButtonState(currentSentenceClipId, false);
-            elements.playerPlay.textContent = '▶';
-            elements.playerProgressBar.style.width = '0%';
             currentSentenceAudio = null;
             currentSentenceClipId = null;
         };
 
-        elements.playerPlay.textContent = '⏸';
         currentSentenceAudio.play();
     } catch (error) {
         console.error('재생 실패:', error);
@@ -2157,9 +2222,7 @@ function updatePlayerSpeed() {
     if (globalAudio) {
         globalAudio.playbackRate = speed;
     }
-    if (currentSentenceAudio) {
-        currentSentenceAudio.playbackRate = speed;
-    }
+    // 문장 재생은 항상 정상 속도 유지 (배속 적용 안함)
 }
 
 // 내보내기 (파일 병합)
