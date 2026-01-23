@@ -21,11 +21,11 @@ class SubtitleGenerator:
             return
 
         import stable_whisper
-        print("Stable-TS 모델 로드 중... (CPU 모드)")
+        print("Stable-TS 모델 로드 중... (CPU 모드, small)")
 
-        # CPU 강제 설정
-        self.stable_model = stable_whisper.load_model("base", device="cpu")
-        print("Stable-TS 모델 로드 완료! (CPU)")
+        # CPU 강제 설정 - small 모델 사용 (base보다 정확도 높음)
+        self.stable_model = stable_whisper.load_model("small", device="cpu")
+        print("Stable-TS 모델 로드 완료! (CPU, small)")
 
     def transcribe_with_alignment(self, audio_path: str, language: str = 'ko') -> dict:
         """Stable-TS로 오디오 분석하여 단어별 정확한 타임스탬프 추출"""

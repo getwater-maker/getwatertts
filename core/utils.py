@@ -8,12 +8,36 @@ import re
 import platform
 from docx import Document
 
+
+# PyInstaller 빌드 경로 처리
+def get_base_dir():
+    """PyInstaller 빌드 또는 개발 환경에 맞는 기본 경로 반환"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller로 빌드된 EXE 실행 시
+        return sys._MEIPASS
+    else:
+        # 개발 환경 (python main.py 실행 시)
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def get_app_data_dir():
+    """사용자 데이터 저장 경로 (출력/임시 파일용)"""
+    if getattr(sys, 'frozen', False):
+        # EXE 실행 시: EXE 파일이 있는 폴더 사용
+        return os.path.dirname(sys.executable)
+    else:
+        # 개발 환경
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 # 프로젝트 경로 설정
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = get_base_dir()           # 리소스 경로 (assets, eel_web 등)
+APP_DATA_DIR = get_app_data_dir()   # 사용자 데이터 경로 (outputs, temp 등)
+
 ASSETS_DIR = os.path.join(BASE_DIR, 'assets')
-OUTPUT_DIR = os.path.join(BASE_DIR, 'outputs')
-TEMP_DIR = os.path.join(BASE_DIR, 'temp')
-FONTS_DIR = os.path.join(BASE_DIR, 'web_app', 'fonts')
+OUTPUT_DIR = os.path.join(APP_DATA_DIR, 'outputs')
+TEMP_DIR = os.path.join(APP_DATA_DIR, 'temp')
+FONTS_DIR = os.path.join(APP_DATA_DIR, 'fonts')
 
 # 폴더 생성
 os.makedirs(OUTPUT_DIR, exist_ok=True)

@@ -6,7 +6,23 @@
       "Bash(python:*)",
       "Bash(curl:*)",
       "Bash(powershell -Command \"& { cd D:\\\\supertonic; .\\\\venv\\\\Scripts\\\\python.exe -c \"\"\nimport sys\nsys.path.insert\\(0, ''.''\\)\nimport json\nfrom unicodedata import normalize\n\n# unicode_indexer 로드\nwith open\\(''assets/onnx/unicode_indexer.json''\\) as f:\n    indexer = json.load\\(f\\)\n\n# 전처리 시뮬레이션\ntext = ''한결같은 너희들의 정성이''\ntext = normalize\\(''NFKD'', text\\)\ntext = text + ''.''\ntext = ''<ko>'' + text + ''</ko>''\n\nprint\\(''Preprocessed:'', repr\\(text\\)\\)\nprint\\(''Length:'', len\\(text\\)\\)\nprint\\(\\)\n\n# 인덱싱\nids = []\nfor ch in text:\n    val = ord\\(ch\\)\n    idx = indexer[val] if val < len\\(indexer\\) else -1\n    ids.append\\(idx\\)\n    if idx == -1:\n        print\\(f''MISSING: {ch} \\(U+{val:04X}\\)''\\)\n\nprint\\(\\)\nprint\\(''IDs:'', ids\\)\nprint\\(''Any -1?'', -1 in ids\\)\n\"\" }\")",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(pyinstaller:*)",
+      "Bash(timeout /t 30 /nobreak)",
+      "Bash(cmd /c \"cd /d D:\\\\supertonic && python -m PyInstaller --clean supertonic.spec\")",
+      "Bash(cmd /c \"cd /d D:\\\\supertonic && dir dist 2>nul || echo dist folder not found\")",
+      "Bash(cmd /c \"cd /d D:\\\\supertonic && python -m PyInstaller --version\")",
+      "Bash(cmd /c \"pip show pyinstaller\")",
+      "Bash(D:\\\\supertonic\\\\venv\\\\Scripts\\\\python.exe -m PyInstaller:*)",
+      "Bash(cmd.exe /c \"cd /d D:\\\\supertonic && D:\\\\supertonic\\\\venv\\\\Scripts\\\\python.exe -m PyInstaller --clean supertonic.spec\")",
+      "Bash(cmd.exe /c \"D:\\\\supertonic\\\\build_exe.bat\")",
+      "Bash(cmd.exe /c \"cd /d D:\\\\supertonic && D:\\\\supertonic\\\\venv\\\\Scripts\\\\pyinstaller.exe --clean supertonic.spec 2>&1\")",
+      "Bash(cmd.exe /c \"cd /d D:\\\\supertonic && D:\\\\supertonic\\\\venv\\\\Scripts\\\\pyinstaller.exe --clean supertonic.spec > build_log.txt 2>&1 && type build_log.txt\")",
+      "Bash(cmd.exe /c \"type D:\\\\supertonic\\\\build_log.txt\")",
+      "Bash(powershell.exe -Command \"Set-Location D:\\\\supertonic; & D:\\\\supertonic\\\\venv\\\\Scripts\\\\pyinstaller.exe --clean supertonic.spec\")",
+      "Bash(powershell.exe -Command \"& D:\\\\supertonic\\\\venv\\\\Scripts\\\\pip.exe show pyinstaller\")",
+      "Bash(powershell.exe -Command \"& D:\\\\supertonic\\\\venv\\\\Scripts\\\\pip.exe install pyinstaller\")",
+      "Bash(powershell.exe -Command \"Set-Location D:\\\\supertonic; & D:\\\\supertonic\\\\venv\\\\Scripts\\\\pyinstaller.exe --clean -y supertonic.spec\")"
     ]
   }
 }

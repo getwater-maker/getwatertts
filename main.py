@@ -9,8 +9,18 @@ import platform
 
 import eel
 
+# PyInstaller 빌드 경로 처리
+def get_base_dir():
+    """PyInstaller 빌드 또는 개발 환경에 맞는 기본 경로 반환"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller로 빌드된 EXE 실행 시
+        return sys._MEIPASS
+    else:
+        # 개발 환경 (python main.py 실행 시)
+        return os.path.dirname(os.path.abspath(__file__))
+
 # 프로젝트 경로 설정
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = get_base_dir()
 sys.path.insert(0, BASE_DIR)
 
 # Core 모듈 임포트
@@ -38,18 +48,277 @@ def read_text_file_eel(file_path):
 
 
 @eel.expose
+def select_script_file():
+    """대본 파일 선택 다이얼로그 열기"""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+
+        file_path = filedialog.askopenfilename(
+            title="대본 파일 선택",
+            filetypes=[
+                ("대본 파일", "*.txt *.docx"),
+                ("텍스트 파일", "*.txt"),
+                ("Word 문서", "*.docx"),
+                ("모든 파일", "*.*")
+            ]
+        )
+
+        root.destroy()
+
+        if file_path:
+            # 경로 구분자를 /로 통일 (Vrew 호환)
+            file_path = file_path.replace("\\", "/")
+            folder_path = os.path.dirname(file_path).replace("\\", "/")
+            return {
+                "success": True,
+                "filepath": file_path,
+                "filename": os.path.basename(file_path),
+                "folderpath": folder_path
+            }
+        else:
+            return {"success": False, "message": "파일이 선택되지 않았습니다."}
+
+    except Exception as e:
+        print(f"파일 선택 실패: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@eel.expose
+def select_subtitle_file():
+    """자막 파일 선택 다이얼로그 열기"""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+
+        file_path = filedialog.askopenfilename(
+            title="자막 파일 선택",
+            filetypes=[
+                ("자막 파일", "*.txt *.srt"),
+                ("텍스트 파일", "*.txt"),
+                ("SRT 파일", "*.srt"),
+                ("모든 파일", "*.*")
+            ]
+        )
+
+        root.destroy()
+
+        if file_path:
+            # 경로 구분자를 /로 통일 (Vrew 호환)
+            file_path = file_path.replace("\\", "/")
+            folder_path = os.path.dirname(file_path).replace("\\", "/")
+            # 파일 내용도 함께 읽기
+            content = read_text_file(file_path)
+            return {
+                "success": True,
+                "filepath": file_path,
+                "filename": os.path.basename(file_path),
+                "folderpath": folder_path,
+                "content": content
+            }
+        else:
+            return {"success": False, "message": "파일이 선택되지 않았습니다."}
+
+    except Exception as e:
+        print(f"파일 선택 실패: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@eel.expose
+def select_video_file():
+    """동영상 파일 선택 다이얼로그 열기 (음성→텍스트 변환용)"""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+
+        file_path = filedialog.askopenfilename(
+            title="동영상/오디오 파일 선택",
+            filetypes=[
+                ("미디어 파일", "*.mp4 *.avi *.mov *.mkv *.webm *.mp3 *.wav *.m4a"),
+                ("동영상 파일", "*.mp4 *.avi *.mov *.mkv *.webm"),
+                ("오디오 파일", "*.mp3 *.wav *.m4a"),
+                ("모든 파일", "*.*")
+            ]
+        )
+
+        root.destroy()
+
+        if file_path:
+            file_path = file_path.replace("\\", "/")
+            folder_path = os.path.dirname(file_path).replace("\\", "/")
+            return {
+                "success": True,
+                "filepath": file_path,
+                "filename": os.path.basename(file_path),
+                "folderpath": folder_path
+            }
+        else:
+            return {"success": False, "message": "파일이 선택되지 않았습니다."}
+
+    except Exception as e:
+        print(f"파일 선택 실패: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@eel.expose
+def transcribe_video(video_path, language='ko'):
+    """동영상/오디오 파일에서 음성을 텍스트로 변환 (Whisper 사용)"""
+    from core.subtitle import get_subtitle_generator
+    from core.utils import TEMP_DIR
+
+    try:
+        if not video_path or not os.path.exists(video_path):
+            return {"success": False, "message": "파일을 찾을 수 없습니다."}
+
+        print(f"음성→텍스트 변환 시작: {video_path}")
+        eel.updateProgress(10, "파일 분석 중...")()
+
+        ext = os.path.splitext(video_path)[1].lower()
+        audio_path = video_path
+
+        # 동영상인 경우 오디오 추출
+        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
+        if ext in video_extensions:
+            eel.updateProgress(20, "동영상에서 오디오 추출 중...")()
+            print("동영상 파일 감지, 오디오 추출 중...")
+
+            temp_audio_path = os.path.join(TEMP_DIR, "temp_video_audio.wav")
+            os.makedirs(TEMP_DIR, exist_ok=True)
+
+            # ffmpeg로 오디오 추출 (16kHz mono WAV)
+            import subprocess
+            result = subprocess.run([
+                'ffmpeg', '-y', '-i', video_path,
+                '-vn',  # 비디오 제외
+                '-ar', '16000',  # 샘플레이트 16kHz
+                '-ac', '1',  # 모노
+                '-c:a', 'pcm_s16le',  # WAV 포맷
+                temp_audio_path
+            ], capture_output=True, text=True)
+
+            if result.returncode != 0:
+                print(f"ffmpeg 오류: {result.stderr}")
+                return {"success": False, "message": f"오디오 추출 실패: {result.stderr[:200]}"}
+
+            audio_path = temp_audio_path
+            print(f"오디오 추출 완료: {temp_audio_path}")
+
+        # MP3인 경우 WAV로 변환
+        elif ext == '.mp3':
+            eel.updateProgress(20, "MP3를 WAV로 변환 중...")()
+            print("MP3 파일 감지, WAV로 변환 중...")
+
+            temp_audio_path = os.path.join(TEMP_DIR, "temp_mp3_audio.wav")
+            os.makedirs(TEMP_DIR, exist_ok=True)
+
+            import subprocess
+            result = subprocess.run([
+                'ffmpeg', '-y', '-i', video_path,
+                '-ar', '16000', '-ac', '1',
+                temp_audio_path
+            ], capture_output=True, text=True)
+
+            if result.returncode != 0:
+                return {"success": False, "message": f"MP3 변환 실패: {result.stderr[:200]}"}
+
+            audio_path = temp_audio_path
+
+        eel.updateProgress(30, "Whisper 모델 로드 중...")()
+
+        # Whisper로 텍스트 변환
+        generator = get_subtitle_generator()
+        generator.init_model()
+
+        eel.updateProgress(50, "음성 인식 중... (시간이 걸릴 수 있습니다)")()
+
+        # stable_whisper의 transcribe 사용
+        lang_map = {'ko': 'ko', 'en': 'en', 'es': 'es', 'pt': 'pt', 'fr': 'fr'}
+        whisper_lang = lang_map.get(language, 'ko')
+
+        result = generator.stable_model.transcribe(
+            audio_path,
+            language=whisper_lang,
+            word_timestamps=True,
+            vad=True
+        )
+
+        eel.updateProgress(80, "텍스트 추출 중...")()
+
+        # 결과에서 텍스트 추출
+        sentences = []
+        for segment in result.segments:
+            text = segment.text.strip() if hasattr(segment, 'text') else ''
+            if text:
+                sentences.append(text)
+
+        # 임시 파일 정리
+        if audio_path != video_path:
+            try:
+                if os.path.exists(audio_path):
+                    os.remove(audio_path)
+            except:
+                pass
+
+        eel.updateProgress(90, "텍스트 파일 저장 중...")()
+
+        if not sentences:
+            return {"success": False, "message": "음성을 인식하지 못했습니다."}
+
+        # 텍스트 파일로 저장 (동영상과 같은 폴더에 동영상명_대본.txt)
+        video_dir = os.path.dirname(video_path)
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        txt_filename = f"{video_name}_대본.txt"
+        txt_path = os.path.join(video_dir, txt_filename).replace("\\", "/")
+
+        try:
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(sentences))
+            print(f"대본 파일 저장 완료: {txt_path}")
+        except Exception as save_err:
+            print(f"대본 파일 저장 실패: {save_err}")
+            txt_path = None
+
+        eel.updateProgress(100, "변환 완료!")()
+
+        print(f"음성→텍스트 변환 완료: {len(sentences)}개 문장")
+
+        return {
+            "success": True,
+            "sentences": sentences,
+            "text": '\n'.join(sentences),
+            "txt_path": txt_path,
+            "message": f"{len(sentences)}개 문장 인식 완료"
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "message": str(e)}
+
+
+@eel.expose
 def select_audio_file():
     """오디오 파일 선택 다이얼로그 열기"""
     import tkinter as tk
     from tkinter import filedialog
 
     try:
-        # tkinter 윈도우 숨기기
         root = tk.Tk()
         root.withdraw()
-        root.attributes('-topmost', True)  # 다이얼로그를 최상위로
+        root.attributes('-topmost', True)
 
-        # 파일 선택 다이얼로그
         file_path = filedialog.askopenfilename(
             title="오디오 파일 선택",
             filetypes=[
@@ -63,12 +332,51 @@ def select_audio_file():
         root.destroy()
 
         if file_path:
-            return {"success": True, "filepath": file_path, "filename": os.path.basename(file_path)}
+            # 경로 구분자를 /로 통일 (Vrew 호환)
+            file_path = file_path.replace("\\", "/")
+            folder_path = os.path.dirname(file_path).replace("\\", "/")
+            return {
+                "success": True,
+                "filepath": file_path,
+                "filename": os.path.basename(file_path),
+                "folderpath": folder_path
+            }
         else:
             return {"success": False, "message": "파일이 선택되지 않았습니다."}
 
     except Exception as e:
         print(f"파일 선택 실패: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@eel.expose
+def select_save_folder(default_path=None):
+    """저장 폴더 선택 다이얼로그 열기"""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+
+        # 기본 경로 설정
+        initial_dir = default_path if default_path and os.path.exists(default_path) else OUTPUT_DIR
+
+        folder_path = filedialog.askdirectory(
+            title="저장 폴더 선택",
+            initialdir=initial_dir
+        )
+
+        root.destroy()
+
+        if folder_path:
+            return {"success": True, "folderpath": folder_path}
+        else:
+            return {"success": False, "message": "폴더가 선택되지 않았습니다."}
+
+    except Exception as e:
+        print(f"폴더 선택 실패: {e}")
         return {"success": False, "message": str(e)}
 
 
@@ -103,7 +411,15 @@ def synthesize_sentence(text, language, voice_name, speed, quality, output_name,
         )
 
         if filepath:
-            return {"success": True, "filepath": filepath, "message": message}
+            # 오디오 파일 길이 계산
+            import soundfile as sf
+            duration = 0
+            try:
+                info = sf.info(filepath)
+                duration = info.duration
+            except:
+                pass
+            return {"success": True, "filepath": filepath, "message": message, "duration": duration}
         else:
             return {"success": False, "message": message}
     except Exception as e:
@@ -154,9 +470,12 @@ def export_merged_audio(file_paths, output_name, output_dir=None, delete_temp_fi
         # 병합
         merged = np.concatenate(all_audio)
 
-        # 저장 (출력 폴더 지정 가능)
+        # 저장 (출력 폴더 지정 가능, 폴더 자동 생성)
         save_dir = output_dir if output_dir else OUTPUT_DIR
-        output_path = os.path.join(save_dir, f"{output_name}.wav")
+        # 경로 구분자를 /로 통일
+        save_dir = save_dir.replace("\\", "/")
+        os.makedirs(save_dir, exist_ok=True)
+        output_path = f"{save_dir}/{output_name}.wav"
         sf.write(output_path, merged, sample_rate)
 
         # 임시 파일 삭제 (병합 완료 후)
@@ -182,6 +501,42 @@ def export_merged_audio(file_paths, output_name, output_dir=None, delete_temp_fi
         import traceback
         traceback.print_exc()
         return {"success": False, "message": str(e)}
+
+
+@eel.expose
+def check_merged_wav_exists(file_name, wav_folder):
+    """병합된 WAV 파일이 이미 존재하는지 확인"""
+    try:
+        if not wav_folder:
+            return {"exists": False, "filepath": None}
+
+        # 경로 구분자 통일
+        wav_folder = wav_folder.replace("\\", "/")
+
+        # 1. 정확한 파일명으로 검색
+        if file_name:
+            wav_path = f"{wav_folder}/{file_name}.wav"
+            if os.path.exists(wav_path):
+                return {"exists": True, "filepath": wav_path}
+
+        # 2. wav 폴더에서 병합 WAV 파일 검색 (문장번호 패턴이 없는 파일)
+        #    문장별 파일: xxx_001.wav, xxx_002.wav
+        #    병합 파일: xxx.wav (숫자 접미사 없음)
+        import re
+        if os.path.exists(wav_folder):
+            wav_files = [f for f in os.listdir(wav_folder) if f.endswith('.wav')]
+            # 숫자 접미사 패턴 (_001, _002 등)이 없는 파일 찾기
+            merged_files = [f for f in wav_files if not re.search(r'_\d{3}\.wav$', f)]
+            if merged_files:
+                # 가장 최근 수정된 파일 선택
+                merged_files.sort(key=lambda f: os.path.getmtime(f"{wav_folder}/{f}"), reverse=True)
+                wav_path = f"{wav_folder}/{merged_files[0]}"
+                return {"exists": True, "filepath": wav_path}
+
+        return {"exists": False, "filepath": None}
+    except Exception as e:
+        print(f"WAV 파일 확인 실패: {e}")
+        return {"exists": False, "filepath": None}
 
 
 @eel.expose
@@ -607,7 +962,7 @@ def export_vrew_file(file_name, wav_path, subtitle_lines, timecodes, output_dir=
                     },
                     "sourceFileType": "VIDEO_AUDIO",
                     "fileLocation": "LOCAL",
-                    "path": wav_path,
+                    "path": wav_path.replace("/", "\\"),
                     "relativePath": f"./sources/{wav_filename}"
                 }
             ],
@@ -723,9 +1078,12 @@ def export_vrew_file(file_name, wav_path, subtitle_lines, timecodes, output_dir=
             }
         }
 
-        # .vrew 파일 생성 (ZIP 압축, 출력 폴더 지정 가능)
+        # .vrew 파일 생성 (ZIP 압축, 출력 폴더 지정 가능, 폴더 자동 생성)
         save_dir = output_dir if output_dir else OUTPUT_DIR
-        vrew_path = os.path.join(save_dir, f"{file_name}.vrew")
+        # 경로 구분자를 /로 통일
+        save_dir = save_dir.replace("\\", "/")
+        os.makedirs(save_dir, exist_ok=True)
+        vrew_path = f"{save_dir}/{file_name}.vrew"
 
         with zipfile.ZipFile(vrew_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             # project.json 추가
@@ -784,7 +1142,7 @@ def main():
             host='localhost',
             size=(None, None),  # 크기 제한 없음
             position=(0, 0),
-            cmdline_args=['--start-maximized', '--window-size=1920,1080']
+            cmdline_args=['--start-maximized', '--window-size=1920,1080', '--guest']
         )
     except Exception as e:
         print(f"브라우저 시작 실패: {e}")
@@ -794,7 +1152,7 @@ def main():
             mode='default',
             port=8080,
             host='localhost',
-            cmdline_args=['--start-maximized']
+            cmdline_args=['--start-maximized', '--guest']
         )
 
 

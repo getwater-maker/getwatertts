@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Supertonic TTS</title>
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -40,18 +41,10 @@
                     <input type="number" id="speed" value="1.0" min="0.5" max="2.0" step="0.1">
                 </div>
                 <div class="setting-item">
-                    <label>대본</label>
-                    <label class="file-input-btn">
-                        <input type="file" id="script-file" accept=".txt,.docx" hidden>
-                        <span id="script-file-label">파일 선택</span>
-                    </label>
-                </div>
-                <div class="setting-item">
-                    <label>자막</label>
-                    <label class="file-input-btn subtitle-input-btn">
-                        <input type="file" id="subtitle-file" accept=".txt" hidden>
-                        <span id="subtitle-file-label">파일 선택</span>
-                    </label>
+                    <label>영상→대본</label>
+                    <button type="button" id="video-transcribe-btn" class="file-input-btn" title="동영상/오디오에서 텍스트 추출 (Whisper)">
+                        <span id="video-file-label">🎬 추출</span>
+                    </button>
                 </div>
                 <div class="setting-item">
                     <label>음성파일</label>
@@ -59,7 +52,25 @@
                         <span id="audio-file-label">파일 선택</span>
                     </button>
                 </div>
-                <div class="setting-item buttons-right">
+                <div class="setting-item">
+                    <label>타임코드</label>
+                    <button type="button" id="regenerate-timecode-btn" class="file-input-btn" title="자막 수정 후 타임코드 재생성">
+                        <span>🔄 재생성</span>
+                    </button>
+                </div>
+            </div>
+            <div class="settings-row settings-row-second">
+                <div class="file-info-group">
+                    <div class="file-info-item">
+                        <button type="button" id="script-input-btn" class="file-select-btn script-btn">대본</button>
+                        <span id="script-file-label" class="file-name-label">파일 없음</span>
+                    </div>
+                    <div class="file-info-item">
+                        <button type="button" id="subtitle-input-btn" class="file-select-btn script-btn">자막</button>
+                        <span id="subtitle-file-label" class="file-name-label">파일 없음</span>
+                    </div>
+                </div>
+                <div class="action-buttons-right">
                     <button id="reset-btn" class="btn btn-reset" title="모든 작업 초기화">🔄 초기화</button>
                     <button id="play-all-btn" class="btn btn-secondary" disabled>▶ 전체 듣기</button>
                     <div class="export-dropdown">
@@ -86,10 +97,32 @@
 
         <!-- 자막 편집기 -->
         <div class="editor-panel">
-            <!-- 탭 헤더 -->
+            <!-- 탭 헤더 + 인라인 플레이어 -->
             <div class="tab-header">
                 <button class="tab-btn active" data-tab="voice">음성</button>
                 <button class="tab-btn" data-tab="subtitle">자막</button>
+
+                <!-- 인라인 플레이어 -->
+                <div id="inline-player" class="inline-player hidden">
+                    <button id="player-prev" class="player-btn-sm" title="이전">⏮</button>
+                    <button id="player-play" class="player-btn-sm player-btn-main" title="재생/일시정지">▶</button>
+                    <button id="player-next" class="player-btn-sm" title="다음">⏭</button>
+                    <span id="player-status" class="player-status-sm">0 / 0</span>
+                    <div id="player-progress-container" class="player-progress-inline">
+                        <div id="player-progress-bar" class="player-progress-bar-inline"></div>
+                    </div>
+                    <span id="player-time" class="player-time">0:00 / 0:00</span>
+                    <select id="player-speed-select" class="player-speed-sm" title="재생 속도">
+                        <option value="0.5">0.5x</option>
+                        <option value="0.75">0.75x</option>
+                        <option value="1.0" selected>1.0x</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="2.0">2.0x</option>
+                    </select>
+                    <button id="player-close" class="player-btn-sm player-close-sm" title="닫기">✕</button>
+                </div>
+
                 <span id="subtitle-file-info" class="subtitle-file-info"></span>
             </div>
 
@@ -109,31 +142,6 @@
                         <p>자막 파일이 없습니다. (파일명_자막.txt)</p>
                     </div>
                 </div>
-            </div>
-        </div>
-
-        <!-- 전체 듣기 플레이어 -->
-        <div id="player-section" class="player-section hidden">
-            <div class="player-controls">
-                <button id="player-prev" class="player-btn">⏮</button>
-                <button id="player-play" class="player-btn">▶</button>
-                <button id="player-next" class="player-btn">⏭</button>
-                <span id="player-status">0 / 0</span>
-                <div class="player-speed">
-                    <label>재생 속도:</label>
-                    <select id="player-speed-select">
-                        <option value="0.5">0.5x</option>
-                        <option value="0.75">0.75x</option>
-                        <option value="1.0" selected>1.0x</option>
-                        <option value="1.25">1.25x</option>
-                        <option value="1.5">1.5x</option>
-                        <option value="2.0">2.0x</option>
-                    </select>
-                </div>
-                <button id="player-close" class="player-btn player-close">✕</button>
-            </div>
-            <div class="player-progress">
-                <div id="player-progress-bar" class="player-progress-bar"></div>
             </div>
         </div>
 

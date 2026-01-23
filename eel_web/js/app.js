@@ -3,14 +3,78 @@
  */
 
 // 전역 상태
-let voiceSentences = [];          // 음성 탭 문장 배열
+let voiceSentences = [];          // 음성 탭 클립 배열 [{id: 'clip_xxx', text: '문장'}, ...]
 let subtitleSentences = [];       // 자막 탭 문장 배열
-let audioFiles = [];              // 생성된 오디오 파일 경로 배열
-let audioCache = {};              // base64 오디오 캐시
+let audioFiles = {};              // 생성된 오디오 파일 경로 {clipId: filepath}
+let audioDurations = {};          // 클립별 재생 시간 {clipId: seconds}
+let audioCache = {};              // base64 오디오 캐시 {clipId: base64data}
+let audioCacheOrder = [];         // 캐시 추가 순서 (LRU 관리용)
+const MAX_AUDIO_CACHE = 10;       // 메모리 절약을 위한 캐시 최대 개수
+let clipIdCounter = 0;            // 클립 ID 카운터
+
+// 고유 클립 ID 생성
+function generateClipId() {
+    return `clip_${++clipIdCounter}_${Date.now()}`;
+}
+
+// clipId를 짧은 해시로 변환 (WAV 파일명용)
+function clipIdToHash(clipId) {
+    let hash = 0;
+    for (let i = 0; i < clipId.length; i++) {
+        const char = clipId.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash; // 32bit 정수로 변환
+    }
+    // 양수로 변환 후 16진수 6자리
+    return Math.abs(hash).toString(16).padStart(6, '0').slice(0, 6);
+}
+
+// audioCache에 항목 추가 (LRU 방식으로 오래된 항목 자동 제거)
+function addToAudioCache(clipId, data) {
+    // 이미 있으면 순서만 업데이트
+    const existingIndex = audioCacheOrder.indexOf(clipId);
+    if (existingIndex !== -1) {
+        audioCacheOrder.splice(existingIndex, 1);
+    }
+
+    // 캐시가 가득 차면 가장 오래된 항목 제거
+    while (audioCacheOrder.length >= MAX_AUDIO_CACHE) {
+        const oldestId = audioCacheOrder.shift();
+        delete audioCache[oldestId];
+        console.log(`audioCache에서 오래된 항목 제거: ${oldestId}`);
+    }
+
+    // 새 항목 추가
+    audioCache[clipId] = data;
+    audioCacheOrder.push(clipId);
+}
+
+// audioCache에서 항목 제거
+function removeFromAudioCache(clipId) {
+    delete audioCache[clipId];
+    const index = audioCacheOrder.indexOf(clipId);
+    if (index !== -1) {
+        audioCacheOrder.splice(index, 1);
+    }
+}
+
+// 텍스트 배열을 클립 객체 배열로 변환
+function textsToClips(texts) {
+    return texts.map(text => ({
+        id: generateClipId(),
+        text: text
+    }));
+}
+
+// 클립 객체 배열에서 텍스트 배열 추출
+function clipsToTexts(clips) {
+    return clips.map(clip => clip.text);
+}
 let subtitleTimecodes = [];       // 자막 탭 타임코드 배열 [{start: "00:00:00,000", end: "00:00:00,000"}, ...]
-let currentFileName = '';         // 현재 파일명 (확장자 제외)
+let currentFileName = '';         // 현재 파일명 (확장자 제외) - 마지막으로 선택된 파일
 let currentFilePath = '';         // 대본 파일 전체 경로
 let currentFileDir = '';          // 대본 파일이 있는 폴더 경로
+let scriptFileName = '';          // 대본 파일명 (확장자 제외) - WAV 내보내기용
 let subtitleFileName = '';        // 자막 파일명
 let externalAudioPath = '';       // 외부 오디오 파일 경로 (자막 싱크용)
 let externalAudioFileName = '';   // 외부 오디오 파일명
@@ -21,9 +85,12 @@ let globalAudio = null;           // 전체 듣기용 오디오 객체
 let currentTab = 'voice';         // 현재 탭 ('voice' 또는 'subtitle')
 let lastExportedFilePath = '';    // 마지막 내보낸 파일 경로
 let isMerging = false;            // 클립 병합 중 플래그
+let isSplitting = false;          // 클립 분할 중 플래그
 let stopRequested = false;        // 중단 요청 플래그
 let currentSentenceAudio = null;  // 단일 문장 재생용 오디오 객체
-let currentSentenceIndex = -1;    // 현재 재생 중인 문장 인덱스
+let currentSentenceClipId = null; // 현재 재생 중인 클립 ID
+let selectedClipIndex = -1;       // 선택된 클립 인덱스 (-1이면 처음부터)
+const CLIP_GAP_MS = 500;          // 클립 사이 무음 간격 (밀리초)
 
 // Undo/Redo 히스토리 (각 탭별 20단계)
 const MAX_HISTORY = 20;
@@ -57,7 +124,6 @@ function initElements() {
     elements.voice = document.getElementById('voice');
     elements.quality = document.getElementById('quality');
     elements.speed = document.getElementById('speed');
-    elements.scriptFile = document.getElementById('script-file');
     elements.playAllBtn = document.getElementById('play-all-btn');
     elements.exportBtn = document.getElementById('export-btn');
     elements.progressSection = document.getElementById('progress-section');
@@ -72,28 +138,33 @@ function initElements() {
     elements.tabBtns = document.querySelectorAll('.tab-btn');
     elements.subtitleFileInfo = document.getElementById('subtitle-file-info');
 
-    // 플레이어 관련
-    elements.playerSection = document.getElementById('player-section');
+    // 인라인 플레이어 관련
+    elements.inlinePlayer = document.getElementById('inline-player');
     elements.playerPrev = document.getElementById('player-prev');
     elements.playerPlay = document.getElementById('player-play');
     elements.playerNext = document.getElementById('player-next');
     elements.playerStatus = document.getElementById('player-status');
     elements.playerSpeedSelect = document.getElementById('player-speed-select');
     elements.playerClose = document.getElementById('player-close');
+    elements.playerProgressContainer = document.getElementById('player-progress-container');
     elements.playerProgressBar = document.getElementById('player-progress-bar');
+    elements.playerTime = document.getElementById('player-time');
     elements.exportResult = document.getElementById('export-result');
     elements.exportMessage = document.getElementById('export-message');
     elements.openFolderBtn = document.getElementById('open-folder-btn');
     elements.openFileBtn = document.getElementById('open-file-btn');
 
-    // 자막 파일 선택
-    elements.subtitleFile = document.getElementById('subtitle-file');
-    elements.subtitleInputBtn = document.querySelector('.subtitle-input-btn');
+    // 자막 파일 선택 버튼
+    elements.subtitleInputBtn = document.getElementById('subtitle-input-btn');
     elements.subtitleFileLabel = document.getElementById('subtitle-file-label');
 
-    // 대본 파일 버튼
-    elements.scriptInputBtn = document.querySelector('.file-input-btn:not(.subtitle-input-btn)');
+    // 대본 파일 선택 버튼
+    elements.scriptInputBtn = document.getElementById('script-input-btn');
     elements.scriptFileLabel = document.getElementById('script-file-label');
+
+    // 동영상→대본 추출 버튼
+    elements.videoTranscribeBtn = document.getElementById('video-transcribe-btn');
+    elements.videoFileLabel = document.getElementById('video-file-label');
 
     // 내보내기 드롭다운
     elements.exportMenu = document.getElementById('export-menu');
@@ -109,18 +180,27 @@ function initElements() {
 
     // 초기화 버튼
     elements.resetBtn = document.getElementById('reset-btn');
+
+    // 타임코드 재생성 버튼
+    elements.regenerateTimecodeBtn = document.getElementById('regenerate-timecode-btn');
 }
 
 // 이벤트 리스너 초기화
 function initEventListeners() {
-    // 대본 파일 선택
-    elements.scriptFile.addEventListener('change', handleFileSelect);
+    // 대본 파일 선택 - 버튼 클릭으로 Python 다이얼로그 열기
+    elements.scriptInputBtn.addEventListener('click', handleFileSelect);
 
-    // 자막 파일 선택
-    elements.subtitleFile.addEventListener('change', handleSubtitleFileSelect);
+    // 동영상→대본 추출 버튼
+    elements.videoTranscribeBtn.addEventListener('click', handleVideoTranscribe);
+
+    // 자막 파일 선택 - 버튼 클릭으로 Python 다이얼로그 열기
+    elements.subtitleInputBtn.addEventListener('click', handleSubtitleFileSelect);
 
     // 오디오 파일 선택 (자막 싱크용) - 버튼 클릭으로 Python 다이얼로그 열기
     elements.audioInputBtn.addEventListener('click', handleAudioFileSelect);
+
+    // 타임코드 재생성 버튼
+    elements.regenerateTimecodeBtn.addEventListener('click', handleRegenerateTimecode);
 
     // 탭 전환
     elements.tabBtns.forEach(btn => {
@@ -154,6 +234,9 @@ function initEventListeners() {
     elements.playerNext.addEventListener('click', playerNext);
     elements.playerClose.addEventListener('click', closePlayer);
     elements.playerSpeedSelect.addEventListener('change', updatePlayerSpeed);
+
+    // 프로그레스바 클릭으로 특정 구간 이동
+    elements.playerProgressContainer.addEventListener('click', seekToPosition);
 
     // 폴더 열기 (대본 파일 폴더 또는 내보낸 파일 폴더)
     elements.openFolderBtn.addEventListener('click', () => {
@@ -228,42 +311,32 @@ async function loadVoiceList() {
     }
 }
 
-// 파일 선택 핸들러
+// 파일 선택 핸들러 (Python 다이얼로그 사용)
 async function handleFileSelect(e) {
-    const file = e.target.files[0];
-    if (!file) return;
+    // Python tkinter 다이얼로그로 파일 선택
+    const result = await eel.select_script_file()();
 
-    // 파일명 및 경로 추출
-    const fullName = file.name;
-    currentFileName = fullName.replace(/\.[^/.]+$/, '');
-    currentFilePath = file.path || '';
-
-    // 폴더 경로 추출 (Windows/Unix 호환)
-    if (currentFilePath) {
-        const lastSep = Math.max(currentFilePath.lastIndexOf('/'), currentFilePath.lastIndexOf('\\'));
-        currentFileDir = lastSep > 0 ? currentFilePath.substring(0, lastSep) : '';
-    } else {
-        currentFileDir = '';
+    if (!result.success) {
+        return;
     }
+
+    const fullName = result.filename;
+    currentFileName = fullName.replace(/\.[^/.]+$/, '');
+    scriptFileName = currentFileName;  // 대본 파일명 별도 저장
+    currentFilePath = result.filepath;
+    currentFileDir = result.folderpath;
 
     // 파일명 라벨 업데이트
     elements.scriptFileLabel.textContent = fullName;
-    elements.scriptInputBtn.classList.add('loaded');
+    elements.scriptFileLabel.classList.add('has-file');
 
     const ext = fullName.split('.').pop().toLowerCase();
 
     try {
         let content = '';
 
-        if (ext === 'txt') {
-            content = await readFileAsText(file);
-        } else if (ext === 'docx') {
-            const filePath = file.path;
-            if (!filePath) {
-                alert('DOCX 파일은 Chrome/Edge 앱 모드에서만 지원됩니다.');
-                return;
-            }
-            content = await eel.read_text_file_eel(filePath)();
+        if (ext === 'txt' || ext === 'docx') {
+            content = await eel.read_text_file_eel(currentFilePath)();
         } else {
             alert('지원하지 않는 파일 형식입니다. TXT 또는 DOCX 파일을 선택해주세요.');
             return;
@@ -274,17 +347,23 @@ async function handleFileSelect(e) {
             return;
         }
 
-        // 음성 탭: 문장 분리
-        voiceSentences = splitIntoSentences(content);
+        // 음성 탭: 문장 분리 후 클립 객체로 변환
+        const sentences = splitIntoSentences(content);
 
-        if (voiceSentences.length === 0) {
+        if (sentences.length === 0) {
             alert('파일에 내용이 없습니다.');
             return;
         }
 
-        // 초기화
-        audioFiles = new Array(voiceSentences.length).fill(null);
+        // 클립 객체 배열로 변환
+        voiceSentences = textsToClips(sentences);
+
+        // 초기화 (객체로 관리)
+        audioFiles = {};
+        audioDurations = {};
         audioCache = {};
+        audioCacheOrder = [];
+        updateTotalDuration();
 
         // 음성 탭 렌더링
         renderVoiceSentences();
@@ -306,47 +385,144 @@ async function handleFileSelect(e) {
     }
 }
 
-// 자막 파일 선택 핸들러
-async function handleSubtitleFileSelect(e) {
-    const file = e.target.files[0];
-    if (!file) return;
+// 동영상→대본 추출 핸들러 (Whisper 음성인식)
+async function handleVideoTranscribe() {
+    // Python tkinter 다이얼로그로 파일 선택
+    const result = await eel.select_video_file()();
+
+    if (!result.success) {
+        return;
+    }
+
+    const fullName = result.filename;
+    currentFileName = fullName.replace(/\.[^/.]+$/, '');
+    scriptFileName = currentFileName;
+    currentFilePath = result.filepath;
+    currentFileDir = result.folderpath;
+
+    // UI 업데이트
+    elements.videoFileLabel.textContent = '처리중...';
+    elements.videoTranscribeBtn.disabled = true;
+    elements.progressSection.classList.remove('hidden');
 
     try {
-        const content = await readFileAsText(file);
+        // Whisper로 음성→텍스트 변환
+        const transcribeResult = await eel.transcribe_video(
+            result.filepath,
+            elements.language.value
+        )();
 
-        if (!content || content.trim().length === 0) {
-            alert('자막 파일이 비어있습니다.');
+        if (!transcribeResult.success) {
+            alert('음성 인식 실패: ' + transcribeResult.message);
+            elements.videoFileLabel.textContent = '🎬 추출';
+            elements.videoTranscribeBtn.disabled = false;
+            elements.progressSection.classList.add('hidden');
             return;
         }
 
-        // 자막 파일 로드 성공
-        subtitleFileName = file.name;
-        subtitleSentences = content.split('\n').filter(line => line.trim().length > 0);
-        subtitleTimecodes = new Array(subtitleSentences.length).fill(null).map(() => ({
-            start: '00:00:00,000',
-            end: '00:00:00,000'
-        }));
+        // 변환된 문장 배열로 음성 탭에 로드
+        const sentences = transcribeResult.sentences;
+
+        if (sentences.length === 0) {
+            alert('인식된 텍스트가 없습니다.');
+            elements.videoFileLabel.textContent = '🎬 추출';
+            elements.videoTranscribeBtn.disabled = false;
+            elements.progressSection.classList.add('hidden');
+            return;
+        }
+
+        // 클립 객체 배열로 변환
+        voiceSentences = textsToClips(sentences);
+
+        // 초기화
+        audioFiles = {};
+        audioDurations = {};
+        audioCache = {};
+        audioCacheOrder = [];
+        updateTotalDuration();
+
+        // 음성 탭 렌더링
+        renderVoiceSentences();
+
+        // 음성 탭 히스토리 초기화
+        initVoiceHistory();
 
         // UI 업데이트
-        elements.subtitleFileLabel.textContent = subtitleFileName;
-        elements.subtitleInputBtn.classList.add('loaded');
-        elements.subtitleFileInfo.textContent = `📄 ${subtitleFileName}`;
+        elements.videoFileLabel.textContent = '✓ 완료';
+        elements.videoTranscribeBtn.disabled = false;
+        elements.scriptFileLabel.textContent = `${fullName} (추출)`;
+        elements.scriptFileLabel.classList.add('has-file');
 
-        console.log('자막 파일 로드 성공:', subtitleFileName, '문장 수:', subtitleSentences.length);
+        // 음성 탭으로 전환
+        switchTab('voice');
 
-        // 자막 탭 렌더링
-        renderSubtitleSentences();
+        // 저장된 파일 경로 표시
+        let message = `${sentences.length}개 문장이 추출되었습니다.`;
+        if (transcribeResult.txt_path) {
+            message += `\n\n대본 저장: ${transcribeResult.txt_path}`;
+        }
+        message += `\n\n필요시 문장을 수정한 후 TTS 변환을 진행하세요.`;
+        alert(message);
 
-        // 자막 탭 히스토리 초기화
-        initSubtitleHistory();
-
-        // 자막 탭으로 전환
-        switchTab('subtitle');
+        // TTS 변환은 사용자가 확인 후 진행하도록 변경
+        // 바로 TTS를 원하면 아래 주석 해제
+        // await processAllSentences();
 
     } catch (error) {
-        console.error('자막 파일 읽기 오류:', error);
-        alert('자막 파일을 읽을 수 없습니다.');
+        console.error('음성 인식 오류:', error);
+        alert('음성 인식 중 오류가 발생했습니다: ' + error.message);
     }
+
+    elements.videoTranscribeBtn.disabled = false;
+    setTimeout(() => {
+        elements.progressSection.classList.add('hidden');
+        elements.videoFileLabel.textContent = '🎬 추출';
+    }, 2000);
+}
+
+// 자막 파일 선택 핸들러
+async function handleSubtitleFileSelect(e) {
+    // Python tkinter 다이얼로그로 파일 선택
+    const result = await eel.select_subtitle_file()();
+
+    if (!result.success) {
+        return;
+    }
+
+    const content = result.content;
+
+    if (!content || content.trim().length === 0) {
+        alert('자막 파일이 비어있습니다.');
+        return;
+    }
+
+    // 자막 파일 로드 성공 - 폴더 경로도 저장
+    subtitleFileName = result.filename;
+    currentFilePath = result.filepath;
+    currentFileDir = result.folderpath;
+    currentFileName = subtitleFileName.replace(/\.[^/.]+$/, '');
+
+    subtitleSentences = content.split('\n').filter(line => line.trim().length > 0);
+    subtitleTimecodes = new Array(subtitleSentences.length).fill(null).map(() => ({
+        start: '00:00:00,000',
+        end: '00:00:00,000'
+    }));
+
+    // UI 업데이트
+    elements.subtitleFileLabel.textContent = subtitleFileName;
+    elements.subtitleFileLabel.classList.add('has-file');
+    elements.subtitleFileInfo.textContent = `📄 ${subtitleFileName}`;
+
+    console.log('자막 파일 로드 성공:', subtitleFileName, '문장 수:', subtitleSentences.length, '폴더:', currentFileDir);
+
+    // 자막 탭 렌더링
+    renderSubtitleSentences();
+
+    // 자막 탭 히스토리 초기화
+    initSubtitleHistory();
+
+    // 자막 탭으로 전환
+    switchTab('subtitle');
 }
 
 // 오디오 파일 선택 핸들러 (자막 싱크용)
@@ -373,9 +549,8 @@ async function handleAudioFileSelect(e) {
         console.log('오디오 파일 선택:', externalAudioFileName, externalAudioPath);
 
         // 폴더 경로 업데이트 (자막 파일이 없는 경우)
-        if (!currentFileDir) {
-            const lastSep = Math.max(externalAudioPath.lastIndexOf('/'), externalAudioPath.lastIndexOf('\\'));
-            currentFileDir = lastSep > 0 ? externalAudioPath.substring(0, lastSep) : '';
+        if (!currentFileDir && result.folderpath) {
+            currentFileDir = result.folderpath;
         }
 
         // 파일명 업데이트 (확장자 제외)
@@ -458,6 +633,29 @@ async function generateTimecodeFromExternalAudio() {
     }, 2000);
 }
 
+// 타임코드 재생성 핸들러
+async function handleRegenerateTimecode() {
+    // 자막이 있는지 확인
+    if (subtitleSentences.length === 0) {
+        alert('자막 파일을 먼저 선택해주세요.');
+        return;
+    }
+
+    // 오디오 파일이 있는지 확인
+    if (!externalAudioPath) {
+        alert('타임코드 생성을 위한 음성 파일을 먼저 선택해주세요.');
+        return;
+    }
+
+    // 확인 다이얼로그
+    if (!confirm('현재 자막 내용으로 타임코드를 다시 생성합니다.\n계속하시겠습니까?')) {
+        return;
+    }
+
+    // 타임코드 재생성
+    await generateTimecodeFromExternalAudio();
+}
+
 // 파일을 텍스트로 읽기
 function readFileAsText(file) {
     return new Promise((resolve, reject) => {
@@ -497,41 +695,55 @@ function renderVoiceSentences() {
         return;
     }
 
-    voiceSentences.forEach((sentence, index) => {
+    voiceSentences.forEach((clip, index) => {
         const row = document.createElement('div');
         row.className = 'sentence-row';
-        row.id = `voice-sentence-${index}`;
+        row.id = `voice-sentence-${clip.id}`;
+        row.dataset.clipId = clip.id;
+
+        // 오디오 파일 존재 여부로 상태 결정
+        const hasAudio = audioFiles[clip.id] != null;
+        const statusText = hasAudio ? '완료' : '대기중';
+        const statusClass = hasAudio ? 'status-done' : '';
+
+        // 선택된 클립 표시
+        const isSelected = selectedClipIndex === index;
 
         row.innerHTML = `
-            <span class="sentence-number">${String(index + 1).padStart(3, '0')}</span>
-            <span class="sentence-text" data-index="${index}" title="클릭하여 수정">${escapeHtml(sentence)}</span>
+            <span class="sentence-number ${isSelected ? 'selected' : ''}" data-index="${index}" title="클릭하여 선택 (전체 듣기 시작점)">${String(index + 1).padStart(3, '0')}</span>
+            <span class="sentence-text" data-clip-id="${clip.id}" data-index="${index}" title="클릭하여 수정">${escapeHtml(clip.text)}</span>
             <div class="sentence-actions">
-                <button class="btn btn-small btn-edit" data-index="${index}" title="TTS 재생성">🔄</button>
-                <button class="btn btn-small btn-play" data-index="${index}" disabled title="듣기">▶</button>
-                <button class="btn btn-small btn-download" data-index="${index}" disabled title="다운로드">💾</button>
-                <span class="sentence-status">대기중</span>
+                <button class="btn btn-small btn-edit" data-clip-id="${clip.id}" data-index="${index}" title="TTS 재생성">🔄</button>
+                <button class="btn btn-small btn-play" data-clip-id="${clip.id}" data-index="${index}" ${hasAudio ? '' : 'disabled'} title="듣기">▶</button>
+                <button class="btn btn-small btn-download" data-clip-id="${clip.id}" data-index="${index}" ${hasAudio ? '' : 'disabled'} title="다운로드">💾</button>
+                <span class="sentence-status ${statusClass}">${statusText}</span>
             </div>
         `;
 
         elements.voiceContainer.appendChild(row);
     });
 
+    // 클립 번호 클릭 시 해당 지점부터 연속 재생
+    elements.voiceContainer.querySelectorAll('.sentence-number').forEach(el => {
+        el.addEventListener('click', (e) => playFromClip(parseInt(e.target.dataset.index)));
+    });
+
     // 문장 텍스트 클릭 시 수정 모드
     elements.voiceContainer.querySelectorAll('.sentence-text').forEach(el => {
-        el.addEventListener('click', (e) => enableVoiceEditMode(parseInt(e.target.dataset.index)));
+        el.addEventListener('click', (e) => enableVoiceEditMode(e.target.dataset.clipId, parseInt(e.target.dataset.index)));
     });
 
     // 버튼 이벤트 연결
     elements.voiceContainer.querySelectorAll('.btn-edit').forEach(btn => {
-        btn.addEventListener('click', (e) => regenerateSentence(parseInt(e.target.dataset.index)));
+        btn.addEventListener('click', (e) => regenerateSentence(e.target.dataset.clipId, parseInt(e.target.dataset.index)));
     });
 
     elements.voiceContainer.querySelectorAll('.btn-play').forEach(btn => {
-        btn.addEventListener('click', (e) => playSentence(parseInt(e.target.dataset.index)));
+        btn.addEventListener('click', (e) => playSentence(e.target.dataset.clipId, parseInt(e.target.dataset.index)));
     });
 
     elements.voiceContainer.querySelectorAll('.btn-download').forEach(btn => {
-        btn.addEventListener('click', (e) => downloadSentence(parseInt(e.target.dataset.index)));
+        btn.addEventListener('click', (e) => downloadSentence(e.target.dataset.clipId, parseInt(e.target.dataset.index)));
     });
 }
 
@@ -600,19 +812,21 @@ function renderSubtitleSentences() {
 }
 
 // 음성 탭 문장 수정 모드 활성화
-function enableVoiceEditMode(index, cursorPosition = null) {
-    const row = document.getElementById(`voice-sentence-${index}`);
+function enableVoiceEditMode(clipId, index, cursorPosition = null) {
+    const row = document.getElementById(`voice-sentence-${clipId}`);
     if (!row) return;
 
     const textEl = row.querySelector('.sentence-text');
-    const currentText = voiceSentences[index];
+    const clip = voiceSentences[index];
+    if (!clip) return;
 
     if (textEl.querySelector('input')) return;
 
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'sentence-input';
-    input.value = currentText;
+    input.value = clip.text;
+    input.dataset.clipId = clipId;
     input.dataset.index = index;
 
     textEl.innerHTML = '';
@@ -630,17 +844,19 @@ function enableVoiceEditMode(index, cursorPosition = null) {
         input.select();
     }
 
-    input.addEventListener('keydown', (e) => handleVoiceInputKeydown(e, index, input));
+    input.addEventListener('keydown', (e) => handleVoiceInputKeydown(e, clipId, index, input));
 
     input.addEventListener('blur', () => {
-        // 병합 중에는 blur 이벤트 무시
-        if (isMerging) return;
-        saveVoiceSentenceEdit(index, input.value);
+        // 병합/분할 중에는 blur 이벤트 무시
+        if (isMerging || isSplitting) return;
+        // clipId가 배열에 없으면 (split으로 제거된 경우) 무시
+        if (!voiceSentences.some(c => c.id === clipId)) return;
+        saveVoiceSentenceEdit(clipId, index, input.value);
     });
 }
 
 // 음성 탭 입력 키보드 이벤트 처리
-function handleVoiceInputKeydown(e, index, input) {
+function handleVoiceInputKeydown(e, clipId, index, input) {
     const cursorPos = input.selectionStart;
     const cursorEnd = input.selectionEnd;
     const textLength = input.value.length;
@@ -649,75 +865,93 @@ function handleVoiceInputKeydown(e, index, input) {
         e.preventDefault();
         // 커서 위치에서 클립 나누기
         if (cursorPos > 0 && cursorPos < textLength) {
-            splitVoiceClip(index, cursorPos);
+            splitVoiceClip(clipId, index, cursorPos);
         } else {
-            saveVoiceSentenceEdit(index, input.value);
+            saveVoiceSentenceEdit(clipId, index, input.value);
         }
     } else if (e.key === 'Escape') {
-        cancelVoiceSentenceEdit(index);
+        cancelVoiceSentenceEdit(clipId, index);
     } else if (e.key === 'Backspace' && cursorPos === 0 && cursorEnd === 0 && index > 0) {
         // 맨앞에서 Backspace: 앞 클립과 합치기
         e.preventDefault();
-        mergeVoiceClipWithPrevious(index);
+        mergeVoiceClipWithPrevious(clipId, index);
     } else if (e.key === 'Delete' && cursorPos === textLength && index < voiceSentences.length - 1) {
         // 맨끝에서 Delete: 뒤 클립과 합치기
         e.preventDefault();
-        mergeVoiceClipWithNext(index);
+        mergeVoiceClipWithNext(clipId, index);
     } else if (e.key === 'ArrowUp' && index > 0) {
         // 위쪽 화살표: 이전 클립으로 이동
         e.preventDefault();
-        saveVoiceSentenceEdit(index, input.value);
-        setTimeout(() => enableVoiceEditMode(index - 1, 'end'), 10);
+        saveVoiceSentenceEdit(clipId, index, input.value);
+        const prevClip = voiceSentences[index - 1];
+        setTimeout(() => enableVoiceEditMode(prevClip.id, index - 1, 'end'), 10);
     } else if (e.key === 'ArrowDown' && index < voiceSentences.length - 1) {
         // 아래쪽 화살표: 다음 클립으로 이동
         e.preventDefault();
-        saveVoiceSentenceEdit(index, input.value);
-        setTimeout(() => enableVoiceEditMode(index + 1, 'start'), 10);
+        saveVoiceSentenceEdit(clipId, index, input.value);
+        const nextClip = voiceSentences[index + 1];
+        setTimeout(() => enableVoiceEditMode(nextClip.id, index + 1, 'start'), 10);
     } else if (e.key === 'ArrowLeft' && cursorPos === 0 && cursorEnd === 0 && index > 0) {
         // 맨앞에서 왼쪽 화살표: 이전 클립 끝으로 이동
         e.preventDefault();
-        saveVoiceSentenceEdit(index, input.value);
-        setTimeout(() => enableVoiceEditMode(index - 1, 'end'), 10);
+        saveVoiceSentenceEdit(clipId, index, input.value);
+        const prevClip = voiceSentences[index - 1];
+        setTimeout(() => enableVoiceEditMode(prevClip.id, index - 1, 'end'), 10);
     } else if (e.key === 'ArrowRight' && cursorPos === textLength && index < voiceSentences.length - 1) {
         // 맨끝에서 오른쪽 화살표: 다음 클립 시작으로 이동
         e.preventDefault();
-        saveVoiceSentenceEdit(index, input.value);
-        setTimeout(() => enableVoiceEditMode(index + 1, 'start'), 10);
+        saveVoiceSentenceEdit(clipId, index, input.value);
+        const nextClip = voiceSentences[index + 1];
+        setTimeout(() => enableVoiceEditMode(nextClip.id, index + 1, 'start'), 10);
     }
 }
 
 // 음성 클립 나누기
-function splitVoiceClip(index, cursorPos) {
-    const currentText = voiceSentences[index];
-    const input = document.querySelector(`#voice-sentence-${index} .sentence-input`);
-    const newText = input ? input.value : currentText;
+function splitVoiceClip(clipId, index, cursorPos) {
+    const clip = voiceSentences[index];
+    if (!clip || clip.id !== clipId) return;
+
+    isSplitting = true;
+
+    const input = document.querySelector(`#voice-sentence-${clipId} .sentence-input`);
+    const newText = input ? input.value : clip.text;
 
     const firstPart = newText.substring(0, cursorPos).trim();
     const secondPart = newText.substring(cursorPos).trim();
 
-    if (!firstPart || !secondPart) return;
+    if (!firstPart || !secondPart) {
+        isSplitting = false;
+        return;
+    }
 
     // 히스토리 저장 (변경 전)
     saveVoiceHistory();
 
-    // 배열 업데이트
-    voiceSentences.splice(index, 1, firstPart, secondPart);
+    // 새 클립 객체 생성
+    const firstClip = { id: generateClipId(), text: firstPart };
+    const secondClip = { id: generateClipId(), text: secondPart };
 
-    // 오디오 파일 배열 업데이트 (분할된 클립은 재생성 필요)
-    audioFiles.splice(index, 1, null, null);
+    // 배열 업데이트 (기존 클립을 두 개의 새 클립으로 교체)
+    voiceSentences.splice(index, 1, firstClip, secondClip);
 
-    // 캐시 삭제
-    delete audioCache[index];
+    // 기존 클립의 오디오 파일/캐시 삭제 (분할된 클립은 재생성 필요)
+    delete audioFiles[clipId];
+    delete audioDurations[clipId];
+    removeFromAudioCache(clipId);
+    updateTotalDuration();
 
     // UI 재렌더링
     renderVoiceSentences();
 
     // 두번째 클립 편집 모드로
-    setTimeout(() => enableVoiceEditMode(index + 1, 'start'), 10);
+    setTimeout(() => {
+        isSplitting = false;
+        enableVoiceEditMode(secondClip.id, index + 1, 'start');
+    }, 10);
 }
 
 // 음성 클립 앞 클립과 합치기
-function mergeVoiceClipWithPrevious(index) {
+function mergeVoiceClipWithPrevious(clipId, index) {
     if (index <= 0) return;
 
     isMerging = true;
@@ -725,21 +959,29 @@ function mergeVoiceClipWithPrevious(index) {
     // 히스토리 저장 (변경 전)
     saveVoiceHistory();
 
-    const input = document.querySelector(`#voice-sentence-${index} .sentence-input`);
-    const currentText = input ? input.value.trim() : voiceSentences[index];
-    const prevText = voiceSentences[index - 1];
+    const currentClip = voiceSentences[index];
+    const prevClip = voiceSentences[index - 1];
+
+    const input = document.querySelector(`#voice-sentence-${clipId} .sentence-input`);
+    const currentText = input ? input.value.trim() : currentClip.text;
+    const prevText = prevClip.text;
     const mergedText = prevText + ' ' + currentText;
     const cursorPos = prevText.length + 1; // 합친 지점
 
+    // 새 클립 객체 생성 (합쳐진 클립)
+    const mergedClip = { id: generateClipId(), text: mergedText };
+
     // 배열 업데이트
-    voiceSentences.splice(index - 1, 2, mergedText);
+    voiceSentences.splice(index - 1, 2, mergedClip);
 
-    // 오디오 파일 배열 업데이트
-    audioFiles.splice(index - 1, 2, null);
-
-    // 캐시 삭제
-    delete audioCache[index - 1];
-    delete audioCache[index];
+    // 기존 클립들의 오디오 파일/캐시 삭제
+    delete audioFiles[prevClip.id];
+    delete audioFiles[currentClip.id];
+    delete audioDurations[prevClip.id];
+    delete audioDurations[currentClip.id];
+    removeFromAudioCache(prevClip.id);
+    removeFromAudioCache(currentClip.id);
+    updateTotalDuration();
 
     // UI 재렌더링
     renderVoiceSentences();
@@ -747,12 +989,12 @@ function mergeVoiceClipWithPrevious(index) {
     // 합쳐진 클립 편집 모드로 (합친 지점에 커서)
     setTimeout(() => {
         isMerging = false;
-        enableVoiceEditMode(index - 1, cursorPos);
+        enableVoiceEditMode(mergedClip.id, index - 1, cursorPos);
     }, 10);
 }
 
 // 음성 클립 뒤 클립과 합치기
-function mergeVoiceClipWithNext(index) {
+function mergeVoiceClipWithNext(clipId, index) {
     if (index >= voiceSentences.length - 1) return;
 
     isMerging = true;
@@ -760,21 +1002,29 @@ function mergeVoiceClipWithNext(index) {
     // 히스토리 저장 (변경 전)
     saveVoiceHistory();
 
-    const input = document.querySelector(`#voice-sentence-${index} .sentence-input`);
-    const currentText = input ? input.value.trim() : voiceSentences[index];
-    const nextText = voiceSentences[index + 1];
+    const currentClip = voiceSentences[index];
+    const nextClip = voiceSentences[index + 1];
+
+    const input = document.querySelector(`#voice-sentence-${clipId} .sentence-input`);
+    const currentText = input ? input.value.trim() : currentClip.text;
+    const nextText = nextClip.text;
     const mergedText = currentText + ' ' + nextText;
     const cursorPos = currentText.length + 1; // 합친 지점
 
+    // 새 클립 객체 생성 (합쳐진 클립)
+    const mergedClip = { id: generateClipId(), text: mergedText };
+
     // 배열 업데이트
-    voiceSentences.splice(index, 2, mergedText);
+    voiceSentences.splice(index, 2, mergedClip);
 
-    // 오디오 파일 배열 업데이트
-    audioFiles.splice(index, 2, null);
-
-    // 캐시 삭제
-    delete audioCache[index];
-    delete audioCache[index + 1];
+    // 기존 클립들의 오디오 파일/캐시 삭제
+    delete audioFiles[currentClip.id];
+    delete audioFiles[nextClip.id];
+    delete audioDurations[currentClip.id];
+    delete audioDurations[nextClip.id];
+    removeFromAudioCache(currentClip.id);
+    removeFromAudioCache(nextClip.id);
+    updateTotalDuration();
 
     // UI 재렌더링
     renderVoiceSentences();
@@ -782,21 +1032,25 @@ function mergeVoiceClipWithNext(index) {
     // 합쳐진 클립 편집 모드로 (합친 지점에 커서)
     setTimeout(() => {
         isMerging = false;
-        enableVoiceEditMode(index, cursorPos);
+        enableVoiceEditMode(mergedClip.id, index, cursorPos);
     }, 10);
 }
 
 // 음성 탭 문장 수정 저장
-function saveVoiceSentenceEdit(index, newText) {
+function saveVoiceSentenceEdit(clipId, index, newText) {
     newText = newText.trim();
     if (!newText) {
-        cancelVoiceSentenceEdit(index);
+        cancelVoiceSentenceEdit(clipId, index);
         return;
     }
 
-    const oldText = voiceSentences[index];
+    const clip = voiceSentences[index];
+    if (!clip) return;
 
-    const row = document.getElementById(`voice-sentence-${index}`);
+    const oldText = clip.text;
+
+    const row = document.getElementById(`voice-sentence-${clipId}`);
+    if (!row) return;
     const textEl = row.querySelector('.sentence-text');
     textEl.innerHTML = escapeHtml(newText);
 
@@ -804,20 +1058,25 @@ function saveVoiceSentenceEdit(index, newText) {
         // 히스토리 저장 (변경 전)
         saveVoiceHistory();
 
-        voiceSentences[index] = newText;
-        audioFiles[index] = null;
-        delete audioCache[index];
-        updateVoiceSentenceStatus(index, '수정됨');
+        clip.text = newText;
+        delete audioFiles[clipId];
+        delete audioDurations[clipId];
+        removeFromAudioCache(clipId);
+        updateTotalDuration();
+        updateVoiceSentenceStatus(clipId, '수정됨');
         row.querySelector('.btn-play').disabled = true;
         row.querySelector('.btn-download').disabled = true;
     }
 }
 
 // 음성 탭 문장 수정 취소
-function cancelVoiceSentenceEdit(index) {
-    const row = document.getElementById(`voice-sentence-${index}`);
+function cancelVoiceSentenceEdit(clipId, index) {
+    const row = document.getElementById(`voice-sentence-${clipId}`);
+    if (!row) return;
+    const clip = voiceSentences[index];
+    if (!clip) return;
     const textEl = row.querySelector('.sentence-text');
-    textEl.innerHTML = escapeHtml(voiceSentences[index]);
+    textEl.innerHTML = escapeHtml(clip.text);
 }
 
 // 자막 탭 문장 수정 모드 활성화
@@ -854,8 +1113,8 @@ function enableSubtitleEditMode(index, cursorPosition = null) {
     input.addEventListener('keydown', (e) => handleSubtitleInputKeydown(e, index, input));
 
     input.addEventListener('blur', () => {
-        // 병합 중에는 blur 이벤트 무시
-        if (isMerging) return;
+        // 병합/분할 중에는 blur 이벤트 무시
+        if (isMerging || isSplitting) return;
         saveSubtitleSentenceEdit(index, input.value);
     });
 }
@@ -909,6 +1168,8 @@ function handleSubtitleInputKeydown(e, index, input) {
 
 // 자막 클립 나누기
 function splitSubtitleClip(index, cursorPos) {
+    isSplitting = true;
+
     const currentText = subtitleSentences[index];
     const input = document.querySelector(`#subtitle-sentence-${index} .sentence-input`);
     const newText = input ? input.value : currentText;
@@ -916,7 +1177,10 @@ function splitSubtitleClip(index, cursorPos) {
     const firstPart = newText.substring(0, cursorPos).trim();
     const secondPart = newText.substring(cursorPos).trim();
 
-    if (!firstPart || !secondPart) return;
+    if (!firstPart || !secondPart) {
+        isSplitting = false;
+        return;
+    }
 
     // 히스토리 저장 (변경 전)
     saveSubtitleHistory();
@@ -935,7 +1199,10 @@ function splitSubtitleClip(index, cursorPos) {
     renderSubtitleSentences();
 
     // 두번째 클립 편집 모드로
-    setTimeout(() => enableSubtitleEditMode(index + 1, 'start'), 10);
+    setTimeout(() => {
+        isSplitting = false;
+        enableSubtitleEditMode(index + 1, 'start');
+    }, 10);
 }
 
 // 자막 클립 앞 클립과 합치기
@@ -1047,7 +1314,7 @@ function saveVoiceHistory() {
     // 현재 상태 저장 (깊은 복사)
     const state = {
         sentences: JSON.parse(JSON.stringify(voiceSentences)),
-        audioFiles: [...audioFiles],
+        audioFiles: JSON.parse(JSON.stringify(audioFiles)),
     };
 
     voiceHistory.push(state);
@@ -1098,8 +1365,9 @@ function undoVoice() {
     const state = voiceHistory[voiceHistoryIndex];
 
     voiceSentences = JSON.parse(JSON.stringify(state.sentences));
-    audioFiles = [...state.audioFiles];
+    audioFiles = JSON.parse(JSON.stringify(state.audioFiles));
     audioCache = {}; // 캐시 초기화
+    audioCacheOrder = [];
 
     renderVoiceSentences();
     console.log(`음성 Undo: ${voiceHistoryIndex + 1}/${voiceHistory.length}`);
@@ -1117,8 +1385,9 @@ function redoVoice() {
     const state = voiceHistory[voiceHistoryIndex];
 
     voiceSentences = JSON.parse(JSON.stringify(state.sentences));
-    audioFiles = [...state.audioFiles];
+    audioFiles = JSON.parse(JSON.stringify(state.audioFiles));
     audioCache = {}; // 캐시 초기화
+    audioCacheOrder = [];
 
     renderVoiceSentences();
     console.log(`음성 Redo: ${voiceHistoryIndex + 1}/${voiceHistory.length}`);
@@ -1197,23 +1466,23 @@ function initSubtitleHistory() {
 
 // 모든 작업 초기화
 function resetAll() {
-    // 확인 대화상자
-    if (!confirm('모든 작업을 초기화하시겠습니까?\n현재 작업 내용이 모두 삭제됩니다.')) {
-        return;
-    }
-
     // 플레이어 중지
     closePlayer();
 
     // 전역 상태 초기화
     voiceSentences = [];
     subtitleSentences = [];
-    audioFiles = [];
+    audioFiles = {};
+    audioDurations = {};
     audioCache = {};
+    audioCacheOrder = [];
+    clipIdCounter = 0;
+    updateTotalDuration();
     subtitleTimecodes = [];
     currentFileName = '';
     currentFilePath = '';
     currentFileDir = '';
+    scriptFileName = '';
     subtitleFileName = '';
     externalAudioPath = '';
     externalAudioFileName = '';
@@ -1224,7 +1493,10 @@ function resetAll() {
     currentTab = 'voice';
     lastExportedFilePath = '';
     isMerging = false;
+    isSplitting = false;
     stopRequested = false;
+    currentSentenceClipId = null;
+    selectedClipIndex = -1;
 
     // Undo/Redo 히스토리 초기화
     voiceHistory = [];
@@ -1233,15 +1505,11 @@ function resetAll() {
     subtitleHistoryIndex = -1;
 
     // UI 초기화
-    // 파일 입력 초기화
-    elements.scriptFile.value = '';
-    elements.subtitleFile.value = '';
-
     // 파일 라벨 초기화
-    elements.scriptFileLabel.textContent = '파일 선택';
-    elements.scriptInputBtn.classList.remove('loaded');
-    elements.subtitleFileLabel.textContent = '파일 선택';
-    elements.subtitleInputBtn.classList.remove('loaded');
+    elements.scriptFileLabel.textContent = '파일 없음';
+    elements.scriptFileLabel.classList.remove('has-file');
+    elements.subtitleFileLabel.textContent = '파일 없음';
+    elements.subtitleFileLabel.classList.remove('has-file');
     elements.audioFileLabel.textContent = '파일 선택';
     elements.audioInputBtn.classList.remove('loaded');
 
@@ -1292,6 +1560,8 @@ async function processAllSentences() {
     const total = voiceSentences.length;
 
     for (let i = 0; i < total; i++) {
+        const clip = voiceSentences[i];
+
         // 중단 요청 확인
         if (stopRequested) {
             updateProgress(0, '변환이 중단되었습니다.');
@@ -1299,19 +1569,23 @@ async function processAllSentences() {
         }
 
         updateProgress((i / total) * 100, `문장 ${i + 1}/${total} 변환 중...`);
-        updateVoiceSentenceStatus(i, '변환중...');
+        updateVoiceSentenceStatus(clip.id, '변환중...');
 
         try {
-            const result = await synthesizeSentence(i);
+            const result = await synthesizeSentence(clip.id, i);
             if (result.success) {
-                audioFiles[i] = result.filepath;
-                updateVoiceSentenceStatus(i, '완료', true);
+                audioFiles[clip.id] = result.filepath;
+                if (result.duration) {
+                    audioDurations[clip.id] = result.duration;
+                }
+                updateVoiceSentenceStatus(clip.id, '완료', true);
+                updateTotalDuration();
             } else {
-                updateVoiceSentenceStatus(i, '실패');
+                updateVoiceSentenceStatus(clip.id, '실패');
             }
         } catch (error) {
             console.error(`문장 ${i + 1} 변환 실패:`, error);
-            updateVoiceSentenceStatus(i, '실패');
+            updateVoiceSentenceStatus(clip.id, '실패');
         }
     }
 
@@ -1319,7 +1593,7 @@ async function processAllSentences() {
         updateProgress(100, '변환 완료!');
     }
 
-    const completedCount = audioFiles.filter(f => f !== null).length;
+    const completedCount = Object.keys(audioFiles).length;
     if (completedCount > 0) {
         elements.playAllBtn.disabled = false;
         elements.exportBtn.disabled = false;
@@ -1335,49 +1609,60 @@ async function processAllSentences() {
 }
 
 // 단일 문장 TTS 변환
-async function synthesizeSentence(index) {
-    const sentence = voiceSentences[index];
-    const outputName = `${currentFileName}_${String(index + 1).padStart(3, '0')}`;
+async function synthesizeSentence(clipId, index) {
+    const clip = voiceSentences[index];
+    if (!clip) return { success: false, message: '클립을 찾을 수 없습니다.' };
+
+    // clipId 해시를 사용한 고유 파일명 (분할/병합해도 충돌 없음)
+    const clipHash = clipIdToHash(clipId);
+    const outputName = `${currentFileName}_${clipHash}`;
+
+    // 대본 폴더/wav 에 저장
+    const wavFolder = currentFileDir ? currentFileDir + '/wav' : null;
 
     return await eel.synthesize_sentence(
-        sentence,
+        clip.text,
         elements.language.value,
         elements.voice.value,
         parseFloat(elements.speed.value),
         parseInt(elements.quality.value),
         outputName,
-        currentFileDir || null  // 대본 파일 폴더에 저장
+        wavFolder
     )();
 }
 
 // 문장 재생성
-async function regenerateSentence(index) {
+async function regenerateSentence(clipId, index) {
     if (isProcessing) return;
 
-    const btn = elements.voiceContainer.querySelector(`.btn-edit[data-index="${index}"]`);
-    btn.disabled = true;
-    updateVoiceSentenceStatus(index, '변환중...');
+    const btn = elements.voiceContainer.querySelector(`.btn-edit[data-clip-id="${clipId}"]`);
+    if (btn) btn.disabled = true;
+    updateVoiceSentenceStatus(clipId, '변환중...');
 
     try {
-        const result = await synthesizeSentence(index);
+        const result = await synthesizeSentence(clipId, index);
         if (result.success) {
-            audioFiles[index] = result.filepath;
-            delete audioCache[index];
-            updateVoiceSentenceStatus(index, '완료', true);
+            audioFiles[clipId] = result.filepath;
+            if (result.duration) {
+                audioDurations[clipId] = result.duration;
+            }
+            removeFromAudioCache(clipId);
+            updateVoiceSentenceStatus(clipId, '완료', true);
+            updateTotalDuration();
         } else {
-            updateVoiceSentenceStatus(index, '실패');
+            updateVoiceSentenceStatus(clipId, '실패');
         }
     } catch (error) {
         console.error(`문장 ${index + 1} 재생성 실패:`, error);
-        updateVoiceSentenceStatus(index, '실패');
+        updateVoiceSentenceStatus(clipId, '실패');
     }
 
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
 }
 
 // 음성 문장 상태 업데이트
-function updateVoiceSentenceStatus(index, status, enablePlay = false) {
-    const row = document.getElementById(`voice-sentence-${index}`);
+function updateVoiceSentenceStatus(clipId, status, enablePlay = false) {
+    const row = document.getElementById(`voice-sentence-${clipId}`);
     if (!row) return;
 
     const statusEl = row.querySelector('.sentence-status');
@@ -1401,18 +1686,27 @@ function updateVoiceSentenceStatus(index, status, enablePlay = false) {
     }
 }
 
+// 플레이어 모드: 'single' (단일 문장) 또는 'all' (전체 듣기)
+let playerMode = 'single';
+
 // 단일 문장 재생 (토글 방식: 1번 클릭=재생, 2번 클릭=정지)
-async function playSentence(index) {
-    const filepath = audioFiles[index];
+async function playSentence(clipId, index) {
+    const filepath = audioFiles[clipId];
     if (!filepath) return;
 
+    // 전체 듣기 모드 중이면 먼저 중지
+    if (playerMode === 'all' && globalAudio) {
+        stopPlayer();
+    }
+
     // 같은 문장을 다시 클릭하면 정지
-    if (currentSentenceAudio && currentSentenceIndex === index) {
+    if (currentSentenceAudio && currentSentenceClipId === clipId) {
         currentSentenceAudio.pause();
         currentSentenceAudio.currentTime = 0;
-        updatePlayButtonState(currentSentenceIndex, false);
+        updatePlayButtonState(currentSentenceClipId, false);
+        hideInlinePlayer();
         currentSentenceAudio = null;
-        currentSentenceIndex = -1;
+        currentSentenceClipId = null;
         return;
     }
 
@@ -1420,39 +1714,56 @@ async function playSentence(index) {
     if (currentSentenceAudio) {
         currentSentenceAudio.pause();
         currentSentenceAudio.currentTime = 0;
-        updatePlayButtonState(currentSentenceIndex, false);
+        updatePlayButtonState(currentSentenceClipId, false);
     }
 
     try {
-        if (!audioCache[index]) {
-            audioCache[index] = await eel.get_audio_url(filepath)();
+        if (!audioCache[clipId]) {
+            addToAudioCache(clipId, await eel.get_audio_url(filepath)());
         }
 
-        currentSentenceAudio = new Audio(audioCache[index]);
+        currentSentenceAudio = new Audio(audioCache[clipId]);
         currentSentenceAudio.playbackRate = parseFloat(elements.playerSpeedSelect.value);
-        currentSentenceIndex = index;
+        currentSentenceClipId = clipId;
+        playerMode = 'single';
+        currentPlayerIndex = index;
+
+        // 인라인 플레이어 표시 (단일 모드)
+        showInlinePlayer('single', index);
 
         // 재생 버튼 상태 업데이트
-        updatePlayButtonState(index, true);
+        updatePlayButtonState(clipId, true);
+
+        // 시간 업데이트
+        currentSentenceAudio.ontimeupdate = () => {
+            if (currentSentenceAudio && currentSentenceAudio.duration) {
+                const progress = (currentSentenceAudio.currentTime / currentSentenceAudio.duration) * 100;
+                elements.playerProgressBar.style.width = `${progress}%`;
+                elements.playerTime.textContent = formatPlayerTime(currentSentenceAudio.currentTime, currentSentenceAudio.duration);
+            }
+        };
 
         // 재생 완료 시 상태 초기화
         currentSentenceAudio.onended = () => {
-            updatePlayButtonState(currentSentenceIndex, false);
+            updatePlayButtonState(currentSentenceClipId, false);
+            elements.playerPlay.textContent = '▶';
+            elements.playerProgressBar.style.width = '0%';
             currentSentenceAudio = null;
-            currentSentenceIndex = -1;
+            currentSentenceClipId = null;
         };
 
+        elements.playerPlay.textContent = '⏸';
         currentSentenceAudio.play();
     } catch (error) {
         console.error('재생 실패:', error);
         currentSentenceAudio = null;
-        currentSentenceIndex = -1;
+        currentSentenceClipId = null;
     }
 }
 
 // 재생 버튼 상태 업데이트 (재생 중이면 ■, 아니면 ▶)
-function updatePlayButtonState(index, isPlaying) {
-    const btn = elements.voiceContainer.querySelector(`.btn-play[data-index="${index}"]`);
+function updatePlayButtonState(clipId, isPlaying) {
+    const btn = elements.voiceContainer.querySelector(`.btn-play[data-clip-id="${clipId}"]`);
     if (btn) {
         btn.textContent = isPlaying ? '■' : '▶';
         btn.title = isPlaying ? '정지' : '재생';
@@ -1465,19 +1776,19 @@ function updatePlayButtonState(index, isPlaying) {
 }
 
 // 단일 문장 다운로드
-async function downloadSentence(index) {
-    const filepath = audioFiles[index];
+async function downloadSentence(clipId, index) {
+    const filepath = audioFiles[clipId];
     if (!filepath) return;
 
     try {
-        if (!audioCache[index]) {
-            audioCache[index] = await eel.get_audio_url(filepath)();
+        if (!audioCache[clipId]) {
+            addToAudioCache(clipId, await eel.get_audio_url(filepath)());
         }
 
-        const filename = `${currentFileName}_${String(index + 1).padStart(3, '0')}.wav`;
+        const filename = `${currentFileName}_${clipIdToHash(clipId)}.wav`;
 
         const link = document.createElement('a');
-        link.href = audioCache[index];
+        link.href = audioCache[clipId];
         link.download = filename;
         document.body.appendChild(link);
         link.click();
@@ -1488,15 +1799,170 @@ async function downloadSentence(index) {
     }
 }
 
-// 전체 듣기 시작
+// 인라인 플레이어 표시
+function showInlinePlayer(mode, index = 0) {
+    playerMode = mode;
+    elements.inlinePlayer.classList.remove('hidden');
+
+    if (mode === 'single') {
+        // 단일 모드: 이전/다음 버튼 숨김, 상태 표시 변경
+        elements.playerPrev.style.display = 'none';
+        elements.playerNext.style.display = 'none';
+        const clip = voiceSentences[index];
+        elements.playerStatus.textContent = `${index + 1}번`;
+    } else {
+        // 전체 모드: 이전/다음 버튼 표시
+        elements.playerPrev.style.display = '';
+        elements.playerNext.style.display = '';
+        updatePlayerStatus();
+    }
+}
+
+// 인라인 플레이어 숨김
+function hideInlinePlayer() {
+    elements.inlinePlayer.classList.add('hidden');
+    elements.playerProgressBar.style.width = '0%';
+    // 총 재생 시간 표시
+    const totalSeconds = getTotalDuration();
+    elements.playerTime.textContent = totalSeconds > 0 ? `총 ${formatTime(totalSeconds)}` : '0:00 / 0:00';
+}
+
+// 시간 포맷 (초 → M:SS)
+function formatTime(seconds) {
+    if (!seconds || isNaN(seconds)) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+// 플레이어 시간 표시 (현재/클립 + 총 시간)
+function formatPlayerTime(current, clipDuration) {
+    const totalSeconds = getTotalDuration();
+    let timeText = `${formatTime(current)} / ${formatTime(clipDuration)}`;
+    if (totalSeconds > 0) {
+        timeText += ` (총 ${formatTime(totalSeconds)})`;
+    }
+    return timeText;
+}
+
+// 전체 재생 시간 계산
+function getTotalDuration() {
+    let totalSeconds = 0;
+    for (const clipId in audioDurations) {
+        totalSeconds += audioDurations[clipId] || 0;
+    }
+    return totalSeconds;
+}
+
+// 전체 재생 시간 표시 (플레이어 타임 영역에)
+function updateTotalDuration() {
+    const totalSeconds = getTotalDuration();
+
+    // 재생 중이 아닐 때만 플레이어 타임에 총 시간 표시
+    if (!isPlaying && elements.playerTime) {
+        if (totalSeconds > 0) {
+            elements.playerTime.textContent = `총 ${formatTime(totalSeconds)}`;
+        } else {
+            elements.playerTime.textContent = '0:00 / 0:00';
+        }
+    }
+}
+
+// 프로그레스바 클릭으로 위치 이동
+function seekToPosition(e) {
+    const rect = elements.playerProgressContainer.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const width = rect.width;
+    const percent = Math.max(0, Math.min(1, clickX / width));
+
+    // 현재 재생 중인 오디오 객체 찾기
+    const audio = playerMode === 'single' ? currentSentenceAudio : globalAudio;
+    if (audio && audio.duration) {
+        audio.currentTime = audio.duration * percent;
+    }
+}
+
+// 클립 번호 클릭 - 해당 지점부터 끝까지 연속 재생
+function playFromClip(index) {
+    // TTS 처리 중에는 재생 불가
+    if (isProcessing) {
+        console.log('TTS 처리 중에는 재생할 수 없습니다.');
+        return;
+    }
+
+    // 클립 유효성 확인
+    if (index < 0 || index >= voiceSentences.length) return;
+
+    // 해당 위치부터 오디오가 있는 클립이 있는지 확인
+    let hasAudioFromIndex = false;
+    for (let i = index; i < voiceSentences.length; i++) {
+        const clip = voiceSentences[i];
+        if (audioFiles[clip.id]) {
+            hasAudioFromIndex = true;
+            break;
+        }
+    }
+
+    if (!hasAudioFromIndex) {
+        console.log('해당 위치부터 재생할 오디오가 없습니다.');
+        alert('해당 위치부터 재생할 오디오가 없습니다.');
+        return;
+    }
+
+    // 현재 재생 중이면 중지
+    stopPlayer();
+
+    // 단일 문장 재생 중이면 중지
+    if (currentSentenceAudio) {
+        currentSentenceAudio.pause();
+        updatePlayButtonState(currentSentenceClipId, false);
+        currentSentenceAudio = null;
+        currentSentenceClipId = null;
+    }
+
+    // 선택 상태 시각적 업데이트
+    selectedClipIndex = index;
+    elements.voiceContainer.querySelectorAll('.sentence-number').forEach((el, i) => {
+        el.classList.toggle('selected', i === selectedClipIndex);
+    });
+
+    // 해당 클립부터 연속 재생 시작
+    currentPlayerIndex = index;
+    isPlaying = true;
+    playerMode = 'all';
+
+    showInlinePlayer('all');
+    elements.playerPlay.textContent = '⏸';
+
+    console.log(`${index + 1}번 클립부터 연속 재생 시작`);
+    playCurrentTrack();
+}
+
+// 전체 듣기 시작 (처음부터)
 function startPlayAll() {
-    const validFiles = audioFiles.filter(f => f !== null);
-    if (validFiles.length === 0) return;
+    // 단일 재생 중이면 먼저 중지
+    if (currentSentenceAudio) {
+        currentSentenceAudio.pause();
+        updatePlayButtonState(currentSentenceClipId, false);
+        currentSentenceAudio = null;
+        currentSentenceClipId = null;
+    }
+
+    // voiceSentences 순서대로 오디오 파일이 있는지 확인
+    const hasAudio = voiceSentences.some(clip => audioFiles[clip.id] != null);
+    if (!hasAudio) return;
+
+    // 항상 처음부터 시작
+    selectedClipIndex = -1;
+    elements.voiceContainer.querySelectorAll('.sentence-number').forEach(el => {
+        el.classList.remove('selected');
+    });
 
     currentPlayerIndex = 0;
     isPlaying = true;
+    playerMode = 'all';
 
-    elements.playerSection.classList.remove('hidden');
+    showInlinePlayer('all');
     elements.playerPlay.textContent = '⏸';
 
     playCurrentTrack();
@@ -1504,48 +1970,56 @@ function startPlayAll() {
 
 // 현재 트랙 재생
 async function playCurrentTrack() {
-    if (currentPlayerIndex >= audioFiles.length) {
+    if (currentPlayerIndex >= voiceSentences.length) {
         stopPlayer();
         return;
     }
 
-    while (currentPlayerIndex < audioFiles.length && audioFiles[currentPlayerIndex] === null) {
+    // 오디오가 있는 다음 클립 찾기
+    while (currentPlayerIndex < voiceSentences.length) {
+        const clip = voiceSentences[currentPlayerIndex];
+        if (audioFiles[clip.id] != null) break;
         currentPlayerIndex++;
     }
 
-    if (currentPlayerIndex >= audioFiles.length) {
+    if (currentPlayerIndex >= voiceSentences.length) {
         stopPlayer();
         return;
     }
 
+    const currentClip = voiceSentences[currentPlayerIndex];
+    const clipId = currentClip.id;
+
     updatePlayerStatus();
-    highlightCurrentSentence();
+    highlightCurrentSentence(clipId);
 
     try {
-        if (!audioCache[currentPlayerIndex]) {
-            audioCache[currentPlayerIndex] = await eel.get_audio_url(audioFiles[currentPlayerIndex])();
+        if (!audioCache[clipId]) {
+            addToAudioCache(clipId, await eel.get_audio_url(audioFiles[clipId])());
         }
 
         if (globalAudio) {
             globalAudio.pause();
         }
 
-        globalAudio = new Audio(audioCache[currentPlayerIndex]);
+        globalAudio = new Audio(audioCache[clipId]);
         globalAudio.playbackRate = parseFloat(elements.playerSpeedSelect.value);
 
         globalAudio.onended = () => {
             if (isPlaying) {
                 currentPlayerIndex++;
+                // 클립 사이 무음 간격
                 setTimeout(() => {
                     playCurrentTrack();
-                }, 300);
+                }, CLIP_GAP_MS);
             }
         };
 
         globalAudio.ontimeupdate = () => {
-            if (globalAudio.duration) {
+            if (globalAudio && globalAudio.duration) {
                 const progress = (globalAudio.currentTime / globalAudio.duration) * 100;
                 elements.playerProgressBar.style.width = `${progress}%`;
+                elements.playerTime.textContent = formatPlayerTime(globalAudio.currentTime, globalAudio.duration);
             }
         };
 
@@ -1560,18 +2034,25 @@ async function playCurrentTrack() {
 
 // 플레이어 상태 업데이트
 function updatePlayerStatus() {
-    const total = audioFiles.filter(f => f !== null).length;
-    const current = audioFiles.slice(0, currentPlayerIndex + 1).filter(f => f !== null).length;
+    // 전체 오디오 파일 수
+    const total = voiceSentences.filter(clip => audioFiles[clip.id] != null).length;
+    // 현재까지의 오디오 파일 수
+    const current = voiceSentences.slice(0, currentPlayerIndex + 1).filter(clip => audioFiles[clip.id] != null).length;
     elements.playerStatus.textContent = `${current} / ${total}`;
 }
 
 // 현재 문장 하이라이트
-function highlightCurrentSentence() {
+function highlightCurrentSentence(clipId) {
     document.querySelectorAll('.sentence-row').forEach(row => {
         row.classList.remove('playing');
     });
 
-    const currentRow = document.getElementById(`voice-sentence-${currentPlayerIndex}`);
+    // clipId가 없으면 currentPlayerIndex로 클립 찾기
+    if (!clipId && voiceSentences[currentPlayerIndex]) {
+        clipId = voiceSentences[currentPlayerIndex].id;
+    }
+
+    const currentRow = document.getElementById(`voice-sentence-${clipId}`);
     if (currentRow) {
         currentRow.classList.add('playing');
         currentRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1582,46 +2063,85 @@ function highlightCurrentSentence() {
 function playerPrev() {
     if (currentPlayerIndex > 0) {
         currentPlayerIndex--;
-        while (currentPlayerIndex > 0 && audioFiles[currentPlayerIndex] === null) {
+        // 오디오가 있는 이전 클립 찾기
+        while (currentPlayerIndex > 0) {
+            const clip = voiceSentences[currentPlayerIndex];
+            if (audioFiles[clip.id] != null) break;
             currentPlayerIndex--;
         }
         if (isPlaying) playCurrentTrack();
-        else updatePlayerStatus();
+        else {
+            updatePlayerStatus();
+            highlightCurrentSentence();
+        }
     }
 }
 
 function playerNext() {
-    if (currentPlayerIndex < audioFiles.length - 1) {
+    if (currentPlayerIndex < voiceSentences.length - 1) {
         currentPlayerIndex++;
-        while (currentPlayerIndex < audioFiles.length - 1 && audioFiles[currentPlayerIndex] === null) {
+        // 오디오가 있는 다음 클립 찾기
+        while (currentPlayerIndex < voiceSentences.length - 1) {
+            const clip = voiceSentences[currentPlayerIndex];
+            if (audioFiles[clip.id] != null) break;
             currentPlayerIndex++;
         }
         if (isPlaying) playCurrentTrack();
-        else updatePlayerStatus();
+        else {
+            updatePlayerStatus();
+            highlightCurrentSentence();
+        }
     }
 }
 
 function playerToggle() {
-    if (isPlaying) {
-        isPlaying = false;
-        elements.playerPlay.textContent = '▶';
-        if (globalAudio) globalAudio.pause();
+    if (playerMode === 'single') {
+        // 단일 모드
+        if (currentSentenceAudio) {
+            if (currentSentenceAudio.paused) {
+                currentSentenceAudio.play();
+                elements.playerPlay.textContent = '⏸';
+            } else {
+                currentSentenceAudio.pause();
+                elements.playerPlay.textContent = '▶';
+            }
+        }
     } else {
-        isPlaying = true;
-        elements.playerPlay.textContent = '⏸';
-        if (globalAudio) globalAudio.play();
-        else playCurrentTrack();
+        // 전체 모드
+        if (isPlaying) {
+            isPlaying = false;
+            elements.playerPlay.textContent = '▶';
+            if (globalAudio) globalAudio.pause();
+        } else {
+            isPlaying = true;
+            elements.playerPlay.textContent = '⏸';
+            if (globalAudio) globalAudio.play();
+            else playCurrentTrack();
+        }
     }
 }
 
 function stopPlayer() {
     isPlaying = false;
     elements.playerPlay.textContent = '▶';
+
+    if (playerMode === 'single' && currentSentenceAudio) {
+        currentSentenceAudio.pause();
+        currentSentenceAudio.currentTime = 0;
+        updatePlayButtonState(currentSentenceClipId, false);
+        currentSentenceAudio = null;
+        currentSentenceClipId = null;
+    }
+
     if (globalAudio) {
         globalAudio.pause();
         globalAudio = null;
     }
+
     elements.playerProgressBar.style.width = '0%';
+    // 총 재생 시간 표시
+    const totalSeconds = getTotalDuration();
+    elements.playerTime.textContent = totalSeconds > 0 ? `총 ${formatTime(totalSeconds)}` : '0:00 / 0:00';
     document.querySelectorAll('.sentence-row').forEach(row => {
         row.classList.remove('playing');
     });
@@ -1629,18 +2149,26 @@ function stopPlayer() {
 
 function closePlayer() {
     stopPlayer();
-    elements.playerSection.classList.add('hidden');
+    hideInlinePlayer();
 }
 
 function updatePlayerSpeed() {
+    const speed = parseFloat(elements.playerSpeedSelect.value);
     if (globalAudio) {
-        globalAudio.playbackRate = parseFloat(elements.playerSpeedSelect.value);
+        globalAudio.playbackRate = speed;
+    }
+    if (currentSentenceAudio) {
+        currentSentenceAudio.playbackRate = speed;
     }
 }
 
 // 내보내기 (파일 병합)
 async function exportMergedAudio() {
-    const validFiles = audioFiles.filter(f => f !== null);
+    // voiceSentences 순서대로 오디오 파일 경로 수집
+    const validFiles = voiceSentences
+        .map(clip => audioFiles[clip.id])
+        .filter(f => f != null);
+
     if (validFiles.length === 0) {
         alert('내보낼 파일이 없습니다.');
         return;
@@ -1651,8 +2179,10 @@ async function exportMergedAudio() {
     updateProgress(0, '파일 병합 중...');
 
     try {
-        // 대본 파일 폴더에 저장
-        const result = await eel.export_merged_audio(validFiles, currentFileName, currentFileDir)();
+        // 대본 폴더/wav 에 저장, 대본 파일명으로 저장
+        const wavFolder = currentFileDir ? currentFileDir + '/wav' : null;
+        const outputName = scriptFileName || currentFileName;
+        const result = await eel.export_merged_audio(validFiles, outputName, wavFolder)();
 
         if (result.success) {
             updateProgress(100, '내보내기 완료!');
@@ -1690,13 +2220,39 @@ function hideExportMenu() {
 
 // Vrew 프로젝트 내보내기
 async function exportVrewProject() {
-    const validFiles = audioFiles.filter(f => f !== null);
+    // voiceSentences 순서대로 오디오 파일 경로 수집
+    const validFiles = voiceSentences
+        .map(clip => audioFiles[clip.id])
+        .filter(f => f != null);
     const hasGeneratedAudio = validFiles.length > 0;
     const hasExternalAudio = externalAudioPath && externalAudioPath.length > 0;
 
-    // 음성 파일 확인 (TTS 생성 또는 외부 파일)
-    if (!hasGeneratedAudio && !hasExternalAudio) {
-        alert('음성 파일이 없습니다.\nTTS 변환을 진행하거나 외부 오디오 파일을 선택해주세요.');
+    // 대본 파일이 있는 폴더 기준으로 하위 폴더에 저장
+    const baseFolder = currentFileDir || 'outputs';
+    const wavFolder = baseFolder + '/wav';   // WAV 파일 저장 폴더
+    const vrewFolder = baseFolder + '/vrew'; // Vrew 파일 저장 폴더
+
+    // WAV 파일명은 대본 파일명 사용
+    const wavFileName = scriptFileName || currentFileName;
+
+    console.log('Vrew 내보내기 - 상태 확인:', {
+        scriptFileName,
+        currentFileName,
+        wavFileName,
+        wavFolder,
+        hasGeneratedAudio,
+        hasExternalAudio,
+        validFilesCount: validFiles.length
+    });
+
+    // 기존 병합 WAV 파일 확인
+    const existingWav = await eel.check_merged_wav_exists(wavFileName, wavFolder)();
+    const hasExistingMergedWav = existingWav.exists;
+    console.log('기존 WAV 파일 확인:', existingWav);
+
+    // 음성 파일 확인 (TTS 생성, 외부 파일, 또는 기존 병합 파일)
+    if (!hasGeneratedAudio && !hasExternalAudio && !hasExistingMergedWav) {
+        alert('음성 파일이 없습니다.\nTTS 변환을 진행하거나 외부 오디오 파일을 선택해주세요.\n또는 먼저 WAV 내보내기를 실행해주세요.');
         return;
     }
 
@@ -1731,15 +2287,22 @@ async function exportVrewProject() {
                 }
                 subtitleTimecodes = whisperResult.timecodes;
             }
-        } else {
-            // TTS 생성된 파일 병합
+        } else if (hasGeneratedAudio) {
+            // TTS 생성된 파일이 있으면 병합 시도
             updateProgress(0, '음성 파일 병합 중...');
-            const mergeResult = await eel.export_merged_audio(validFiles, currentFileName, currentFileDir)();
+            const mergeResult = await eel.export_merged_audio(validFiles, wavFileName, wavFolder)();
 
             if (!mergeResult.success) {
-                throw new Error(mergeResult.message);
+                // 병합 실패 시 (파일이 삭제된 경우) 기존 병합 WAV 확인
+                if (hasExistingMergedWav) {
+                    console.log('문장별 파일 없음, 기존 병합 WAV 파일 사용:', existingWav.filepath);
+                    audioFilePath = existingWav.filepath;
+                } else {
+                    throw new Error(mergeResult.message);
+                }
+            } else {
+                audioFilePath = mergeResult.filepath;
             }
-            audioFilePath = mergeResult.filepath;
 
             updateProgress(30, 'Whisper 분석 중...');
 
@@ -1754,6 +2317,26 @@ async function exportVrewProject() {
             }
 
             subtitleTimecodes = whisperResult.timecodes;
+        } else if (hasExistingMergedWav) {
+            // 기존 병합 WAV 파일만 있는 경우
+            updateProgress(10, '기존 WAV 파일 사용...');
+            audioFilePath = existingWav.filepath;
+            console.log('기존 병합 WAV 파일 재사용:', audioFilePath);
+
+            // 타임코드가 아직 생성되지 않았으면 생성
+            const hasTimecodes = subtitleTimecodes.some(tc => tc.start !== '00:00:00,000' || tc.end !== '00:00:00,000');
+            if (!hasTimecodes) {
+                updateProgress(20, 'Whisper 분석 중...');
+                const whisperResult = await eel.generate_subtitle_timecodes(
+                    audioFilePath,
+                    subtitleSentences
+                )();
+
+                if (!whisperResult.success) {
+                    throw new Error(whisperResult.message);
+                }
+                subtitleTimecodes = whisperResult.timecodes;
+            }
         }
 
         // UI 업데이트
@@ -1769,13 +2352,13 @@ async function exportVrewProject() {
 
         updateProgress(70, 'Vrew 프로젝트 생성 중...');
 
-        // Vrew 파일 생성 (대본 파일 폴더에 저장)
+        // Vrew 파일 생성 (vrew 폴더에 저장)
         const vrewResult = await eel.export_vrew_file(
             currentFileName,
             audioFilePath,
             subtitleSentences,
             subtitleTimecodes,
-            currentFileDir
+            vrewFolder
         )();
 
         if (!vrewResult.success) {
@@ -1785,7 +2368,7 @@ async function exportVrewProject() {
         updateProgress(100, 'Vrew 프로젝트 생성 완료!');
         lastExportedFilePath = vrewResult.filepath;
         elements.exportResult.classList.remove('hidden');
-        elements.exportMessage.textContent = `✅ Vrew 프로젝트 저장 완료!\n${currentFileName}.vrew\n\nVrew에서 열어 편집하세요.`;
+        elements.exportMessage.textContent = `✅ Vrew 프로젝트 저장 완료!\n${vrewResult.filepath}\n\nVrew에서 열어 편집하세요.`;
         elements.exportMessage.style.color = '#4CAF50';
 
     } catch (error) {

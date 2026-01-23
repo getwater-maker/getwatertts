@@ -46,7 +46,6 @@ body {
     width: 95%;
     margin: 0 auto;
     padding: 24px 32px;
-    padding-bottom: 100px;
 }
 
 /* 헤더 */
@@ -95,6 +94,65 @@ body {
     gap: 20px;
     align-items: flex-end;
     flex-wrap: wrap;
+}
+
+/* 두번째 설정 행 (대본/자막 파일 + 액션 버튼) */
+.settings-row-second {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-light);
+    align-items: center;
+    justify-content: space-between;
+}
+
+.file-info-group {
+    display: flex;
+    gap: 24px;
+    align-items: center;
+}
+
+.file-info-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.file-select-btn {
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.file-select-btn.script-btn {
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    color: white;
+}
+
+.file-select-btn.script-btn:hover {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    transform: translateY(-1px);
+}
+
+.file-name-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.file-name-label.has-file {
+    color: var(--accent-primary);
+    font-weight: 500;
+}
+
+.action-buttons-right {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-left: auto;
 }
 
 .setting-item {
@@ -162,6 +220,25 @@ body {
     overflow: hidden;
     white-space: nowrap;
     max-width: 100%;
+}
+
+/* 대본/자막 파일 선택 버튼 (파란색 강조) */
+.file-input-btn.script-btn {
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    border-color: #8b5cf6;
+    color: white;
+}
+
+.file-input-btn.script-btn:hover {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+}
+
+.file-input-btn.script-btn.loaded {
+    background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+    border-color: #16a34a;
+    color: white;
 }
 
 /* 자막 파일 입력 버튼 */
@@ -400,9 +477,11 @@ select {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 12px 20px;
+    padding: 10px 20px;
     background: var(--bg-primary);
     border-bottom: 2px solid var(--border-color);
+    flex-wrap: wrap;
+    min-height: 56px;
 }
 
 .tab-btn {
@@ -433,6 +512,7 @@ select {
     font-size: 13px;
     color: var(--text-muted);
     font-style: italic;
+    flex-shrink: 0;
 }
 
 /* 탭 내용 */
@@ -523,6 +603,26 @@ select {
     padding: 6px 10px;
     border-radius: 8px;
     text-align: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
+}
+
+.sentence-number:hover {
+    background: var(--accent-primary);
+    color: white;
+    transform: scale(1.05);
+}
+
+.sentence-number.selected {
+    background: var(--accent-primary);
+    color: white;
+    box-shadow: 0 0 0 3px var(--accent-light);
+}
+
+.sentence-number.selected::after {
+    content: ' ▶';
+    font-size: 10px;
 }
 
 /* SRT 타임코드 */
@@ -674,99 +774,129 @@ select {
     background: var(--accent-secondary);
 }
 
-/* 전체 듣기 플레이어 */
-.player-section {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: var(--bg-secondary);
-    border-top: 3px solid var(--accent-primary);
-    padding: 18px 32px;
-    z-index: 1000;
-    box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.1);
-}
-
-.player-controls {
+/* 인라인 플레이어 (탭 헤더 내) */
+.inline-player {
     display: flex;
     align-items: center;
-    gap: 16px;
-    max-width: 1600px;
-    margin: 0 auto;
+    gap: 8px;
+    margin-left: 20px;
+    padding: 6px 12px;
+    background: var(--bg-secondary);
+    border: 2px solid var(--accent-primary);
+    border-radius: 25px;
+    box-shadow: var(--shadow-sm);
 }
 
-.player-btn {
-    width: 44px;
-    height: 44px;
+.inline-player.hidden {
+    display: none;
+}
+
+.player-btn-sm {
+    width: 28px;
+    height: 28px;
     padding: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
+    font-size: 12px;
     border-radius: 50%;
     background: var(--bg-input);
-    border: 2px solid var(--border-color);
-    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
     cursor: pointer;
     transition: all 0.2s ease;
 }
 
-.player-btn:hover {
+.player-btn-sm:hover {
     background: var(--accent-light);
     border-color: var(--accent-primary);
     color: var(--accent-primary);
 }
 
-.player-close {
-    margin-left: auto;
-    width: 36px;
-    height: 36px;
+.player-btn-main {
+    width: 32px;
+    height: 32px;
     font-size: 14px;
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: white;
 }
 
-#player-status {
-    font-size: 15px;
-    color: var(--text-secondary);
-    font-weight: 600;
-    min-width: 100px;
-    font-family: 'Consolas', 'Monaco', monospace;
+.player-btn-main:hover {
+    background: var(--accent-secondary);
+    border-color: var(--accent-secondary);
+    color: white;
 }
 
-.player-speed {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-left: auto;
-    margin-right: 16px;
-}
-
-.player-speed label {
-    font-size: 13px;
-    font-weight: 600;
+.player-close-sm {
+    width: 24px;
+    height: 24px;
+    font-size: 10px;
+    background: transparent;
+    border: none;
     color: var(--text-muted);
 }
 
-.player-speed select {
-    width: auto;
-    min-width: 80px;
-    padding: 8px 12px;
-    font-size: 13px;
+.player-close-sm:hover {
+    color: var(--error);
+    background: var(--error-light);
 }
 
-.player-progress {
-    max-width: 1600px;
-    margin: 12px auto 0;
+.player-status-sm {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 600;
+    min-width: 50px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    text-align: center;
+}
+
+/* 전체 듣기가 아닐 때 숨김 */
+.inline-player.single-mode .player-prev-next {
+    display: none;
+}
+
+.player-progress-inline {
+    width: 200px;
     height: 6px;
     background: var(--bg-input);
     border-radius: 3px;
-    overflow: hidden;
+    overflow: visible;
+    cursor: pointer;
+    position: relative;
 }
 
-.player-progress-bar {
+.player-progress-inline:hover {
+    height: 8px;
+    margin-top: -1px;
+    margin-bottom: -1px;
+}
+
+.player-progress-bar-inline {
     height: 100%;
     background: var(--accent-gradient);
     width: 0%;
     transition: width 0.1s linear;
+    border-radius: 3px;
+    pointer-events: none;
+}
+
+.player-time {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: 'Consolas', 'Monaco', monospace;
+    min-width: 75px;
+    text-align: center;
+}
+
+.player-speed-sm {
+    width: auto;
+    min-width: 60px;
+    padding: 4px 8px;
+    font-size: 11px;
+    border-radius: 6px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
 }
 
 /* 내보내기 결과 */
@@ -857,6 +987,27 @@ select {
     .setting-item.buttons-right {
         margin-left: 0;
         justify-content: center;
+    }
+
+    .settings-row-second {
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .file-info-group {
+        flex-direction: column;
+        gap: 8px;
+        width: 100%;
+    }
+
+    .file-info-item {
+        width: 100%;
+    }
+
+    .action-buttons-right {
+        margin-left: 0;
+        justify-content: center;
+        width: 100%;
     }
 
     .sentence-row {

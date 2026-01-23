@@ -352,7 +352,8 @@ class TTSEngine:
 
             # 출력 폴더 (지정되지 않으면 기본 OUTPUT_DIR)
             save_dir = output_dir if output_dir else OUTPUT_DIR
-            filepath = os.path.join(save_dir, filename)
+            os.makedirs(save_dir, exist_ok=True)
+            filepath = f"{save_dir}/{filename}"
             sf.write(filepath, combined, self.sample_rate)
 
             if progress_callback:
