@@ -91,6 +91,7 @@ let currentSentenceAudio = null;  // 단일 문장 재생용 오디오 객체
 let currentSentenceClipId = null; // 현재 재생 중인 클립 ID
 let selectedClipIndex = -1;       // 선택된 클립 인덱스 (-1이면 처음부터)
 const CLIP_GAP_MS = 500;          // 클립 사이 무음 간격 (밀리초)
+let playAllTimeoutId = null;      // 전체 듣기 다음 트랙 타이머 ID
 
 // Undo/Redo 히스토리 (각 탭별 20단계)
 const MAX_HISTORY = 20;
@@ -515,7 +516,7 @@ async function handleSubtitleFileSelect(e) {
     // UI 업데이트
     elements.subtitleFileLabel.textContent = subtitleFileName;
     elements.subtitleFileLabel.classList.add('has-file');
-    elements.subtitleFileInfo.textContent = `📄 ${subtitleFileName}`;
+    updateFileInfoDisplay();
 
     console.log('자막 파일 로드 성공:', subtitleFileName, '문장 수:', subtitleSentences.length, '폴더:', currentFileDir);
 
@@ -675,13 +676,15 @@ function splitIntoSentences(text) {
     text = text.replace(/\r\n/g, '\n');
     text = text.replace(/\n\s*\n/g, '<<BREAK>>');
     text = text.replace(/\n/g, ' ');
-    text = text.replace(/([.?!。？！])\s*/g, '$1<<SPLIT>>');
+    // 마침표+따옴표를 함께 처리 (예: ." 또는 !")
+    text = text.replace(/([.?!。？！]["'""'']?)\s*/g, '$1<<SPLIT>>');
     text = text.replace(/<<BREAK>>/g, '<<SPLIT>>');
 
     const result = text
         .split('<<SPLIT>>')
         .map(s => s.trim())
-        .filter(s => s.length > 0);
+        // 실제 문자(한글, 영문, 숫자)가 포함된 문장만 유지
+        .filter(s => s.length > 0 && /[\p{L}\p{N}]/u.test(s));
 
     return result;
 }
@@ -1494,6 +1497,7 @@ function resetAll() {
     currentPlayerIndex = 0;
     isPlaying = false;
     globalAudio = null;
+    playAllTimeoutId = null;
     currentTab = 'voice';
     lastExportedFilePath = '';
     isMerging = false;
@@ -1778,7 +1782,7 @@ async function playSentence(clipId, index) {
     if (!filepath) return;
 
     // 전체 듣기 모드 중이면 먼저 중지
-    if (playerMode === 'all' && globalAudio) {
+    if (playerMode === 'all' && (globalAudio || isPlaying)) {
         stopPlayer();
     }
 
@@ -1789,6 +1793,7 @@ async function playSentence(clipId, index) {
         updatePlayButtonState(currentSentenceClipId, false);
         currentSentenceAudio = null;
         currentSentenceClipId = null;
+        playerMode = 'single';
         return;
     }
 
@@ -1798,6 +1803,9 @@ async function playSentence(clipId, index) {
         currentSentenceAudio.currentTime = 0;
         updatePlayButtonState(currentSentenceClipId, false);
     }
+
+    // 단일 재생 모드로 설정
+    playerMode = 'single';
 
     try {
         if (!audioCache[clipId]) {
@@ -1931,6 +1939,28 @@ function updateTotalDuration() {
             elements.playerTime.textContent = '0:00 / 0:00';
         }
     }
+
+    // 파일 정보도 함께 업데이트
+    updateFileInfoDisplay();
+}
+
+// 파일명 + 클립 상태 표시 (클립 수 | 완료 수)
+function updateFileInfoDisplay() {
+    // 표시할 파일명 결정 (대본 파일 우선, 없으면 자막 파일)
+    const fileName = scriptFileName || subtitleFileName || '';
+    if (!fileName) {
+        elements.subtitleFileInfo.textContent = '';
+        return;
+    }
+
+    const totalClips = voiceSentences.length;
+    const completedClips = Object.keys(audioFiles).filter(id => audioFiles[id] != null).length;
+
+    if (totalClips > 0) {
+        elements.subtitleFileInfo.textContent = `📄 ${fileName} | ${totalClips} 클립 | ${completedClips} 완료`;
+    } else {
+        elements.subtitleFileInfo.textContent = `📄 ${fileName}`;
+    }
 }
 
 // 프로그레스바 클릭으로 위치 이동
@@ -2003,14 +2033,23 @@ function playFromClip(index) {
     playCurrentTrack();
 }
 
-// 전체 듣기 시작 (처음부터)
+// 전체 듣기 시작 (처음부터) - 토글 방식
 function startPlayAll() {
-    // 단일 재생 중이면 먼저 중지
+    // 이미 전체 듣기 재생 중이면 중지
+    if (isPlaying && playerMode === 'all') {
+        stopPlayer();
+        return;
+    }
+
+    // 단일 문장 재생 중이면 먼저 중지
     if (currentSentenceAudio) {
         currentSentenceAudio.pause();
+        currentSentenceAudio.currentTime = 0;
         updatePlayButtonState(currentSentenceClipId, false);
         currentSentenceAudio = null;
         currentSentenceClipId = null;
+        // 인라인 플레이어 숨기기 (전체 듣기에서 다시 표시됨)
+        hideInlinePlayer();
     }
 
     // voiceSentences 순서대로 오디오 파일이 있는지 확인
@@ -2027,6 +2066,9 @@ function startPlayAll() {
     isPlaying = true;
     playerMode = 'all';
 
+    // 버튼을 중지 버튼으로 변경
+    elements.playAllBtn.innerHTML = '⏹ 중지';
+
     showInlinePlayer('all');
     elements.playerPlay.textContent = '⏸';
 
@@ -2035,6 +2077,11 @@ function startPlayAll() {
 
 // 현재 트랙 재생
 async function playCurrentTrack() {
+    // 재생 중지 요청 확인
+    if (!isPlaying) {
+        return;
+    }
+
     if (currentPlayerIndex >= voiceSentences.length) {
         stopPlayer();
         return;
@@ -2073,8 +2120,8 @@ async function playCurrentTrack() {
         globalAudio.onended = () => {
             if (isPlaying) {
                 currentPlayerIndex++;
-                // 클립 사이 무음 간격
-                setTimeout(() => {
+                // 클립 사이 무음 간격 (타이머 ID 저장으로 중지 시 취소 가능)
+                playAllTimeoutId = setTimeout(() => {
                     playCurrentTrack();
                 }, CLIP_GAP_MS);
             }
@@ -2176,6 +2223,11 @@ function playerToggle() {
         if (isPlaying) {
             isPlaying = false;
             elements.playerPlay.textContent = '▶';
+            // 대기 중인 다음 트랙 타이머 취소
+            if (playAllTimeoutId) {
+                clearTimeout(playAllTimeoutId);
+                playAllTimeoutId = null;
+            }
             if (globalAudio) globalAudio.pause();
         } else {
             isPlaying = true;
@@ -2190,6 +2242,12 @@ function stopPlayer() {
     isPlaying = false;
     elements.playerPlay.textContent = '▶';
 
+    // 대기 중인 다음 트랙 타이머 취소
+    if (playAllTimeoutId) {
+        clearTimeout(playAllTimeoutId);
+        playAllTimeoutId = null;
+    }
+
     if (playerMode === 'single' && currentSentenceAudio) {
         currentSentenceAudio.pause();
         currentSentenceAudio.currentTime = 0;
@@ -2202,6 +2260,9 @@ function stopPlayer() {
         globalAudio.pause();
         globalAudio = null;
     }
+
+    // 전체 듣기 버튼 텍스트 복원
+    elements.playAllBtn.innerHTML = '▶ 전체 듣기';
 
     elements.playerProgressBar.style.width = '0%';
     // 총 재생 시간 표시
